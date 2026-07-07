@@ -20,6 +20,7 @@ Design notes
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -37,15 +38,15 @@ class Party(BaseModel):
     """One negotiator and everything known about them and their result."""
 
     party_id: str = Field(..., description="Stable id within the dialogue, e.g. 'agent_1'.")
-    priorities: dict[str, str] | None = Field(
+    priorities: Optional[dict[str, str]] = Field(
         default=None,
         description="issue name -> priority label ('High'/'Medium'/'Low'). Source-specific.",
     )
-    outcome_points: int | None = Field(
+    outcome_points: Optional[int] = Field(
         default=None, description="Points this party scored (dataset-provided, not recomputed)."
     )
-    satisfaction: str | None = None
-    opponent_likeness: str | None = None
+    satisfaction: Optional[str] = None
+    opponent_likeness: Optional[str] = None
     metadata: dict = Field(default_factory=dict, description="Demographics, personality, reasons.")
 
 
@@ -58,10 +59,10 @@ class Turn(BaseModel):
     strategies: list[str] = Field(
         default_factory=list, description="Utterance-level strategy labels, if annotated."
     )
-    action: Action | None = Field(
+    action: Optional[Action] = Field(
         default=None, description="Set for protocol events; None for ordinary utterances."
     )
-    action_data: dict | None = Field(
+    action_data: Optional[dict] = Field(
         default=None, description="Structured payload for an action (e.g. deal terms)."
     )
 
@@ -70,7 +71,7 @@ class Outcome(BaseModel):
     """How the negotiation ended."""
 
     agreement_reached: bool
-    final_deal: dict[str, dict[str, int]] | None = Field(
+    final_deal: Optional[dict[str, dict[str, int]]] = Field(
         default=None,
         description="party_id -> {issue -> quantity} for the accepted deal; None if no agreement.",
     )

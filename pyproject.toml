@@ -3,7 +3,9 @@ name = "accord"
 version = "0.0.0"
 description = "LLM-powered negotiation-intelligence API — measured, retrieval-augmented, containerized."
 readme = "README.md"
-requires-python = ">=3.11"
+# 3.9+ so it runs on the GPU-cluster venv (python3.9). Code avoids PEP 604
+# (`X | None`) runtime unions because pydantic evaluates model annotations.
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Sameer Rajendra" }]
 # Runtime deps are pinned in requirements.txt and grow per build phase.
@@ -27,10 +29,13 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
+# UP007/UP045 would rewrite Optional[X] -> X | None, which pydantic can't
+# evaluate at runtime on Python 3.9 — keep Optional[...] intentionally.
+ignore = ["UP007", "UP045"]
 # S101 (assert) is fine in tests; long-lines in docstrings handled case-by-case.
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]

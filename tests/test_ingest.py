@@ -37,8 +37,8 @@ RAW_AGREEMENT = {
     },
     "annotations": [
         ["Hello there!", "small-talk"],
-        ["I need firewood.", "self-need,other-need"],
-        ["I need firewood.", "self-need,not-a-real-label"],  # bogus label filtered
+        # multi-label utterance with one bogus label that must be filtered out.
+        ["I need firewood.", "self-need,other-need,not-a-real-label"],
     ],
 }
 

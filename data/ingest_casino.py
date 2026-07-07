@@ -96,8 +96,11 @@ def _coerce_quantities(mapping: dict) -> dict[str, int]:
 def _build_annotation_index(annotations: list) -> dict[str, list[str]]:
     """Map utterance text -> list of valid strategy labels.
 
-    CaSiNo annotations are ``[[text, "a,b"], ...]``. We key on text because they
-    are not positionally aligned to ``chat_logs``.
+    CaSiNo annotations are ``[[text, "a,b"], ...]``. We key on text rather than
+    position: 3/396 annotated dialogues have fewer annotations than utterances
+    (some turns are simply unlabeled), which breaks positional alignment. Text
+    keying is unambiguous here because no annotated dialogue contains two
+    utterances with identical text (verified against the full corpus).
     """
     index: dict[str, list[str]] = {}
     for entry in annotations or []:
