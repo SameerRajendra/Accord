@@ -1,0 +1,36 @@
+[project]
+name = "accord"
+version = "0.0.0"
+description = "LLM-powered negotiation-intelligence API — measured, retrieval-augmented, containerized."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Sameer Rajendra" }]
+# Runtime deps are pinned in requirements.txt and grow per build phase.
+# Phase 0 needs only pydantic; it is duplicated here so `pip install -e .` works.
+dependencies = ["pydantic>=2.6,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["data", "analysis", "rag", "agent", "api", "evals"]
+
+[tool.pytest.ini_options]
+# Run tests from the repo root and import top-level packages (data, evals, ...).
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+# S101 (assert) is fine in tests; long-lines in docstrings handled case-by-case.
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]

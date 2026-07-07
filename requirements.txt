@@ -1,0 +1,10 @@
+# Runtime dependencies, added phase by phase (keep this honest — only what's used).
+#
+# Phase 0 — data spine
+pydantic>=2.6,<3
+
+# Phase 1 — analysis + baseline evals  (anthropic, scikit-learn, xgboost, pandas)
+# Phase 2 — RAG                         (psycopg[binary], pgvector, openai/sentence-transformers)
+# Phase 3 — agent                       (langgraph)
+# Phase 4 — serve                       (fastapi, uvicorn)
+# Phase 5 — observability               (langfuse, wandb)

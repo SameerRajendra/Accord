@@ -1,0 +1,24 @@
+# Local dev stack: API + Postgres/pgvector. Wired up in Phase 2 (RAG) / Phase 4 (serve).
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: accord
+      POSTGRES_PASSWORD: accord
+      POSTGRES_DB: accord
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # api:  # enabled in Phase 4
+  #   build:
+  #     context: ..
+  #     dockerfile: infra/Dockerfile
+  #   depends_on: [db]
+  #   ports: ["8080:8080"]
+  #   environment:
+  #     DATABASE_URL: postgresql://accord:accord@db:5432/accord
+
+volumes:
+  pgdata:

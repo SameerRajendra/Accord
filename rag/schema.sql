@@ -1,0 +1,1 @@
+-- pgvector DDL for the case corpus. Status: not yet implemented (Phase 2, see SPEC.md).
