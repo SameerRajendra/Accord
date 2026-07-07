@@ -1,0 +1,5 @@
+# Dev/test tooling. Installable with ANY pip (no editable/PEP 660 install needed —
+# run tests and modules from the repo root; pytest uses pythonpath=["."]).
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8
+ruff>=0.5

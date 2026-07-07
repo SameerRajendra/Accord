@@ -44,7 +44,11 @@ dialogues (Food / Water / Firewood), 396 with utterance-level strategy annotatio
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+
+# Install deps. Either path works — run all commands from the repo root.
+pip install -e ".[dev]"                              # modern pip (>= 21.3)
+# ...or on older pip (no editable/PEP 660 install needed):
+pip install -r requirements.txt -r requirements-dev.txt
 
 # Download raw CaSiNo and normalize -> data/processed/casino.jsonl
 python -m data.ingest_casino --download
@@ -52,7 +56,7 @@ python -m data.ingest_casino --download
 # Only the 396 strategy-annotated dialogues:
 python -m data.ingest_casino --download --annotated-only
 
-pytest -q
+pytest -q && ruff check .
 ```
 
 `ingest_casino` emits one normalized [`Transcript`](data/schema.py) per line of JSONL.
