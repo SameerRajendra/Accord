@@ -102,7 +102,7 @@ class Transcript(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _check_integrity(self) -> "Transcript":
+    def _check_integrity(self) -> Transcript:
         # Turn indices must be contiguous and 0-based.
         expected = list(range(len(self.turns)))
         actual = [t.index for t in self.turns]
