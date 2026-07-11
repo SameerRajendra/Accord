@@ -15,6 +15,10 @@ Design notes
 - Strategy annotations are optional and sparse (only ~38% of CaSiNo dialogues
   are annotated), so `Turn.strategies` defaults to empty and
   `Transcript.has_strategy_annotations` records whether labels were available.
+- `Turn.metadata` holds source-specific per-turn extras that aren't the
+  persuasion-strategy taxonomy `strategies` was built for — e.g.
+  CraigslistBargain's dialogue-act intents (`init-price`, `counter-price`,
+  `agree`, ...), which are a different label scheme entirely.
 """
 
 from __future__ import annotations
@@ -65,6 +69,11 @@ class Turn(BaseModel):
     action_data: Optional[dict] = Field(
         default=None, description="Structured payload for an action (e.g. deal terms)."
     )
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Source-specific per-turn extras (e.g. dialogue-act intent) that don't "
+        "fit `strategies` (a distinct, source-specific taxonomy of persuasion tactics).",
+    )
 
 
 class Outcome(BaseModel):
@@ -112,3 +121,22 @@ class Transcript(BaseModel):
         if not self.outcome.agreement_reached and self.outcome.final_deal is not None:
             raise ValueError("agreement_reached=False but final_deal is set")
         return self
+
+
+class CaseDocument(BaseModel):
+    """A retrievable unit in the RAG case corpus.
+
+    Two flavors, distinguished by `kind`:
+    - "case": one past negotiation rendered as a precedent (setup, tactics,
+      outcome, distilled lesson).
+    - "strategy": one entry from the negotiation-strategy playbook.
+
+    `text` is the natural-language field that gets embedded (Phase 2); `metadata`
+    carries the structured fields used for filtering and retrieval evaluation.
+    """
+
+    case_id: str = Field(..., description="Stable id, e.g. 'casino-42' or 'strategy-vouch-fair'.")
+    source: str = Field(..., description="'casino' for cases, 'playbook' for strategies.")
+    kind: str = Field(..., description="'case' or 'strategy'.")
+    text: str = Field(..., description="Embeddable natural-language document.")
+    metadata: dict = Field(default_factory=dict)

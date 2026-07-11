@@ -34,11 +34,15 @@ is the signal. If a reviewer reads everything, it should get stronger, not weake
 
 ## Data
 
-**CaSiNo** (Chawla et al., NAACL 2021) — 1030 two-party campsite resource-negotiation
-dialogues (Food / Water / Firewood), 396 with utterance-level strategy annotations.
+**CraigslistBargain** (He et al., EMNLP 2018, *Decoupling Strategy and Generation in
+Negotiation Dialogues*) — 6,682 real buyer/seller price-haggling dialogues scraped from
+Craigslist across six categories (housing, furniture, electronics, bike, car, phone),
+with per-turn dialogue-act intents and a final agreed price (or no deal). Hosted on
+CodaLab; ingested directly from the raw source (see `data/ingest_craigslist.py` for the
+verified JSON structure notes).
 
 > Raw data is **not committed** (see `.gitignore`); regenerate it locally.
-> Verify the [CaSiNo license](https://github.com/kushalchawla/CaSiNo) before committing any data files.
+> Verify the dataset's license before committing any data files.
 
 ## Quickstart (Phase 0)
 
@@ -50,24 +54,26 @@ pip install -e ".[dev]"                              # modern pip (>= 21.3)
 # ...or on older pip (no editable/PEP 660 install needed):
 pip install -r requirements.txt -r requirements-dev.txt
 
-# Download raw CaSiNo and normalize -> data/processed/casino.jsonl
-python -m data.ingest_casino --download
+# Download raw CraigslistBargain (train+validation+test) and normalize
+# -> data/processed/craigslist_bargain.jsonl
+python -m data.ingest_craigslist --download
 
-# Only the 396 strategy-annotated dialogues:
-python -m data.ingest_casino --download --annotated-only
+# Build the RAG case corpus -> data/processed/case_corpus.jsonl
+python -m data.build_case_corpus
 
 pytest -q && ruff check .
 ```
 
-`ingest_casino` emits one normalized [`Transcript`](data/schema.py) per line of JSONL.
-The schema is source-agnostic on purpose: adding DealOrNoDeal or CraigslistBargain later
-means a new ingestion script, not a new pipeline.
+`ingest_craigslist` emits one normalized [`Transcript`](data/schema.py) per line of
+JSONL. The schema is source-agnostic on purpose: adding another negotiation corpus later
+means a new ingestion script, not a new pipeline — this is exactly what happened when
+this project moved from an initial CaSiNo-based ingestion to CraigslistBargain.
 
 ## Build phases
 
 | Phase | Scope | Ships | Status |
 |------:|-------|-------|:------:|
-| 0 | Data spine: schema + CaSiNo ingestion | normalized transcripts, schema tests | ✅ done |
+| 0 | Data spine: schema + CraigslistBargain ingestion + RAG case corpus | normalized transcripts, case corpus, tests | ✅ done |
 | 1 | Analysis + baseline evals | `results/sentiment.csv`, `results/outcome.csv` | ⏳ |
 | 2 | RAG (pgvector) | `results/retrieval.csv` (recall@k, MRR) | ⏳ |
 | 3 | Agent + **RAG vs no-RAG ablation** | the ablation table | ⏳ |
@@ -90,11 +96,26 @@ results/   committed eval outputs (reproducibility)
 
 ## Limitations (stated up front, and growing)
 
-- Trained/evaluated on **campsite-resource** dialogues. Generalization to business
-  contracts is **untested** — measuring that gap is itself an honest finding this repo intends to report.
-- Strategy annotations cover only 396/1030 dialogues.
+- Trained/evaluated on **consumer marketplace price-haggling** (Craigslist listings).
+  Sawant's thesis frames the problem around **business-contract** negotiation, based on
+  qualitative interviews with practitioners in that setting — a real domain gap between
+  the framing source and the training data, stated plainly rather than hidden.
+  Generalization from one to the other is **untested**; measuring that gap is itself an
+  honest finding this repo intends to report.
+- The thesis itself is a **qualitative study** (9 semi-structured practitioner
+  interviews), not a dataset or a validated model — it explicitly states formal
+  validation was beyond its scope. Accord is the systems build that operationalizes and
+  measures the framework it proposes; nothing about the thesis's own findings is being
+  reused as ground truth.
+- Per-turn dialogue-act intents (`init-price`, `counter-price`, `agree`, ...) are a
+  coarser signal than a persuasion-strategy taxonomy — they mark discourse moves, not
+  rhetorical tactics. A dedicated sentiment/behavior taxonomy is planned for Phase 1,
+  not assumed to already exist in this data.
 
 ## References
 
-- K. Chawla et al., *CaSiNo: A Corpus of Campsite Negotiation Dialogues for Automatic Negotiation Systems*, NAACL 2021.
-- Y. Sawant, *Enhancing Negotiation Advantage*, MSc thesis, Cranfield School of Management, 2024.
+- M. He, D. He, D. Chapman, P. Liang, C. D. Manning, *Decoupling Strategy and Generation
+  in Negotiation Dialogues*, EMNLP 2018. (CraigslistBargain dataset.)
+- Y. Sawant, *Enhancing Negotiation Advantage: An AI-Driven Framework for Predicting and
+  Mitigating Extreme Negotiation Behaviour in Business Contracts using Sentiment Analysis
+  and Predictive Modelling*, MSc thesis, Cranfield School of Management, 2024.
