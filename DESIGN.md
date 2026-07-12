@@ -1,10 +1,12 @@
 # Accord — System Design
 
 **Scope:** the systems/engineering design for Accord, a negotiation-intelligence API whose
-**entire LLM stack is self-hosted open models served on TensorRT-LLM (Triton), on H100/H200 GPUs.**
-No hosted LLM API is used at inference time. This document is the authoritative architecture
-reference; where it differs from [SPEC.md](SPEC.md) (which framed a Claude-API-default build with
-optional vLLM), **this document supersedes it** on the serving decision.
+**entire LLM stack is self-hosted open models** (target: TensorRT-LLM/Triton on H100/H200; see §3
+for current-vs-target reality) and whose orchestration layer is **LangChain + LangGraph, with an
+MCP server exposing its own tools** (§5). No hosted LLM API is used at inference time. This
+document is the authoritative architecture reference; where it differs from [SPEC.md](SPEC.md)
+(which framed a Claude-API-default build, "direct SDK for single-shot calls," and no MCP at all),
+**this document supersedes it** on serving, orchestration, and tool exposition.
 
 Design ethos, unchanged from the SPEC: **measure everything.** Every capability claim — accuracy,
 latency, throughput, cost — is backed by a committed benchmark in `results/`, the same honest
@@ -27,7 +29,7 @@ Given a negotiation transcript (normalized [`Transcript`](data/schema.py)), `/an
 |---|---|---|
 | Latency (full `/analyze`) | p50 ≤ ~10 s, p95 ≤ ~18 s, streamed | Analysis endpoint, not a chat turn; recommendation dominates. |
 | Throughput | saturate GPU: maximize tok/s at fixed p95 | The number that justifies self-hosting. |
-| Cost | report $/request and $/1M tokens **amortized from GPU-hour** | Honest self-host economics (see §7). |
+| Cost | report $/request and $/1M tokens **amortized from GPU-hour** | Honest self-host economics (see §8). |
 | Reproducibility | committed eval outputs + pinned engine build configs | A reviewer can rebuild the engines and re-run. |
 | Observability | per-stage trace, TTFT/TPOT, GPU util, cost | What production inference teams actually watch. |
 
@@ -36,7 +38,9 @@ Given a negotiation transcript (normalized [`Transcript`](data/schema.py)), `/an
 - **Serving:** TensorRT-LLM engines behind Triton Inference Server (in-flight batching, paged KV cache).
 - **Models:** open-weight only. No Claude/OpenAI/etc. at inference *or* as an eval judge.
 - **Team:** solo. Favor one serving path done rigorously over many done shallowly.
-- **Data:** CaSiNo (campsite-resource negotiation). Generalization is explicitly untested (§8).
+- **Data:** CraigslistBargain (real buyer/seller price-haggling; He et al., EMNLP 2018) — replaced
+  an earlier CaSiNo-based ingestion. Generalization to Sawant's thesis's business-contract framing
+  is explicitly untested (§9).
 
 ---
 
@@ -86,6 +90,14 @@ Given a negotiation transcript (normalized [`Transcript`](data/schema.py)), `/an
 This is where the project earns its "inference systems" claim. The engine-build pipeline is committed
 and reproducible.
 
+> **Target vs. current reality:** everything below is the target architecture. What's actually
+> running on the cluster today is **SGLang** serving instruct models directly (Qwen2.5-7B-Instruct
+> for Accord's analysis calls, on its own port; a separate Llama-3.1-8B instance for a different
+> project shares the same node). No TensorRT-LLM engine has been built yet — that remains the
+> stretch goal for the quantization-ablation story (§7), tracked honestly rather than implied as
+> done. SGLang is a legitimate, fast serving choice in its own right (RadixAttention prefix
+> caching, continuous batching), just not the one this section describes.
+
 ### Engine build pipeline
 ```
 HF checkpoint ─► quantize (ModelOpt: FP8 / INT4-AWQ) ─► trtllm-build (engine) ─► Triton model repo ─► serve
@@ -124,7 +136,40 @@ across 2×H100 (classification+embeddings on GPU0, recommendation on GPU1) to av
 
 ---
 
-## 5. Scale & reliability
+## 5. Agent orchestration & tool exposition: LangChain, LangGraph, MCP
+
+Decided 2026-07-12, reversing SPEC.md's original "direct SDK for single-shot calls" framing.
+LangChain and MCP are now used throughout the pipeline, not just LangGraph for the agent —
+recorded here because it changes several already-described components above.
+
+- **LangChain for single-shot calls too.** `analysis/sentiment.py` and `analysis/behaviors.py`
+  use LangChain's `ChatOpenAI` client pointed at the self-hosted SGLang endpoint (`base_url`
+  override, dummy API key). The class name is the wire-protocol it speaks (OpenAI-compatible
+  REST), **not** the provider — no OpenAI API is involved anywhere in this project, consistent
+  with the self-hosted-only constraint (§1). Structured output goes through
+  `.with_structured_output(PydanticModel)` rather than a hand-rolled JSON-parsing/repair loop.
+  This replaces the originally-planned raw `openai` client calls, trading a heavier dependency
+  for one consistent structured-output pattern across every LLM call in the repo.
+- **LangChain's `PGVector`** (the `langchain_postgres` package, not the older deprecated
+  `langchain_community` one) is the retrieval vector store — `rag/retriever.py` wraps
+  `PGVector(embeddings=..., connection=...).as_retriever(search_kwargs={"k": ...})` rather than
+  a hand-rolled `psycopg` + raw-SQL client.
+- **MCP server** (`mcp_server/tools.py`, built with FastMCP) exposes Accord's own capabilities —
+  `retrieve_precedent`, `predict_outcome`, `analyze_sentiment` — as MCP tools. Any MCP client
+  (Claude Desktop, another agent) can call Accord's negotiation-intelligence pipeline directly.
+  The LangGraph agent calls the **same underlying Python functions directly**, not through its
+  own MCP server as a client — chosen over a full server+client round-trip for the agent itself
+  (see the trade-off table, §8) to avoid a pointless self-network-hop. This mirrors the
+  tool-exposition pattern from the author's other project (AEGOF v2's FastMCP GPU-profiling
+  harness), applied here to a different domain.
+- **Embeddings still go through the self-hosted stack** — `rag/embed.py` calls
+  `langchain_openai.OpenAIEmbeddings` (again: protocol name, not provider) pointed at an
+  embedding-serving SGLang instance, not a bare `sentence-transformers` script — consistent with
+  running the embedder through the same LLM-inference-engine path as the rest of the pipeline.
+
+---
+
+## 6. Scale & reliability
 
 ### Latency budget (single `/analyze`, design targets to validate)
 | Stage | Model | ~Output tok | Est. latency | On critical path? |
@@ -155,7 +200,7 @@ Langfuse traces each stage; Prometheus scrapes Triton (queue time, compute time,
 
 ---
 
-## 6. Measurement plan (the honest benchmarks)
+## 7. Measurement plan (the honest benchmarks)
 
 Two layers — **serving** (the GPU/inference story) and **task** (does it actually work):
 
@@ -173,15 +218,17 @@ Two layers — **serving** (the GPU/inference story) and **task** (does it actua
 
 ---
 
-## 7. Trade-off analysis
+## 8. Trade-off analysis
 
 | Decision | Chosen | Alternative | Why / cost |
 |---|---|---|---|
-| Serving stack | **TensorRT-LLM + Triton** | vLLM | Max latency/throughput ceiling on Hopper (FP8, compiled engines); cost is a heavier build pipeline (checkpoint convert → quantize → `trtllm-build`) vs vLLM's near-zero setup. Deliberate: the build pipeline *is* part of the showcase. |
+| Serving stack | **TensorRT-LLM + Triton** (target) / **SGLang** (current, §3 caveat) | vLLM | Max latency/throughput ceiling on Hopper (FP8, compiled engines); cost is a heavier build pipeline (checkpoint convert → quantize → `trtllm-build`) vs vLLM's near-zero setup. Deliberate: the build pipeline *is* part of the showcase — but SGLang is what's actually running today (see §3), since no engine has been built yet. |
 | LLM provider | **Self-hosted open** | Claude/OpenAI API | Full control of latency/cost/quantization and a real GPU-serving artifact; cost is that recommendation quality must be earned from open weights, and there's no managed autoscaling. |
 | Recommendation model | 32B (H100) / 70B (H200) | 7B everywhere | Reasoning-heavy step needs the capacity; cost is it's the latency + memory bottleneck. |
 | Outcome predictor | **XGBoost** | LLM classifier | ~1000× cheaper/faster, calibrated probabilities, honestly benchmarkable; cost is feature engineering. |
-| Vector store | **pgvector (HNSW)** | Pinecone/Weaviate/Qdrant | One service, real SQL, self-hostable, plenty for corpus scale; cost is less turnkey ANN tuning. |
+| Vector store | **pgvector (HNSW) via LangChain's `PGVector`** | Pinecone/Weaviate/Qdrant, or a hand-rolled psycopg client | One service, real SQL, self-hostable, plenty for corpus scale; going through LangChain's abstraction (§5) costs some transparency vs. hand-written SQL but keeps one consistent library across the pipeline. |
+| Single-shot LLM calls | **LangChain (`ChatOpenAI` + structured output)** | raw `openai` client | Consistent structured-output pattern across every LLM call in the repo, and is itself a demonstrable piece of the #1 skill gap (LLM apps & agents); cost is an extra dependency layer over a plain HTTP client that SPEC.md originally called for. |
+| Tool exposition | **MCP server (FastMCP)**, agent calls tools directly (not as its own MCP client) | Internal-only Python functions, no MCP; or agent-as-MCP-client | Makes the pipeline consumable by any MCP client (Claude Desktop, other agents) — a real, demonstrable integration point beyond the REST API; the agent skips a self-network-hop by calling the same functions directly rather than round-tripping through its own server. |
 | Structured output | **Grammar-constrained (XGrammar)** | prompt + JSON-repair loop | Guarantees valid contracts at decode time, removes a failure class; cost is a small decode overhead + grammar setup. |
 | Cost model | **amortized GPU-hour** | per-token API price | Honest: self-hosting wins **only at high utilization** — at ~$2.5/H100-hr and a saturated ~3k tok/s that's ≈ $0.2/1M output tokens (well under hosted-API rates), but an **idle** GPU is pure burn. The benchmark reports the utilization break-even, not a flattering single number. |
 
@@ -190,12 +237,18 @@ Two layers — **serving** (the GPU/inference story) and **task** (does it actua
 - **Disaggregated serving** — separate prefill/decode pools, or split classification vs recommendation onto dedicated GPUs, once one GPU's KV cache is the bottleneck.
 - **Autoscaling / scale-to-zero** to fix the idle-GPU cost problem for bursty traffic (the self-host Achilles heel).
 - **A fine-tuned small classifier** (LoRA) for sentiment/behavior if the zero-shot open baseline underperforms the labels.
-- **Multi-corpus generalization** — the campsite→business-contract gap is untested (§8); adding a second corpus is the honest next experiment.
+- **Multi-corpus generalization** — the consumer-haggling→business-contract gap is untested (§9); adding a second corpus is the honest next experiment.
+- **Actually build the TensorRT-LLM engines** — §3's engine-build pipeline is still the target architecture; SGLang is the pragmatic Phase 1 stand-in. Revisit once the quantization-ablation story (§7) needs the real comparison.
 
 ---
 
-## 8. Limitations (stated up front)
-- Trained/evaluated on **campsite-resource** dialogues (CaSiNo). Generalization to business contracts is **untested** — and measuring that gap is itself a finding this repo will report, not hide.
-- Strategy annotations cover only 396/1030 dialogues.
+## 9. Limitations (stated up front)
+- Trained/evaluated on **consumer marketplace price-haggling** (CraigslistBargain). Generalization
+  to Sawant's thesis's **business-contract** framing is **untested** — and measuring that gap is
+  itself a finding this repo will report, not hide.
+- CraigslistBargain's per-turn dialogue-act intents (`init-price`, `counter-price`, `agree`, ...)
+  are rule-based, not human-annotated, and are a coarser signal than a persuasion-strategy or
+  sentiment taxonomy — treated as a weak proxy in early evals, explicitly caveated as such, not
+  gold-standard labels.
 - **No hosted-API baseline** by design — comparisons are open-vs-open (quantized vs full-precision, served vs zero-shot, RAG vs no-RAG), so "beats a frontier API" is explicitly *not* a claim made here.
 - The eval judge is itself an open model; LLM-judge scores carry self-consistency and bias caveats.

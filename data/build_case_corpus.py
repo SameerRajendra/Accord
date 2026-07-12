@@ -44,10 +44,11 @@ DEFAULT_OUTPUT = Path("data/processed/case_corpus.jsonl")
 
 DOMAIN_BLURB = "a real Craigslist price negotiation between a buyer and a seller"
 
-# Dialogue-act intents worth surfacing as "tactics" in the rendered case text.
-# Excludes "unknown" (uninformative) and the four action-echoing intents
-# (offer/accept/reject/quit), which are already captured in the outcome line.
-_MEANINGFUL_INTENTS = frozenset(
+# Dialogue-act intents that carry real signal — excludes "unknown"
+# (uninformative) and the four action-echoing intents (offer/accept/reject/
+# quit), which are protocol events, not tone. Shared with analysis/
+# outcome_model.py for feature engineering, not just this module's case text.
+MEANINGFUL_INTENTS = frozenset(
     {"intro", "disagree", "agree", "inquiry", "inform", "vague-price", "init-price", "counter-price"}
 )
 
@@ -80,7 +81,7 @@ def _dialogue_act_counts(transcript: Transcript) -> dict[str, dict[str, int]]:
     counts: dict[str, dict[str, int]] = {p.party_id: {} for p in transcript.parties}
     for turn in transcript.turns:
         intent = turn.metadata.get("intent")
-        if intent not in _MEANINGFUL_INTENTS:
+        if intent not in MEANINGFUL_INTENTS:
             continue
         party = counts.setdefault(turn.speaker, {})
         party[intent] = party.get(intent, 0) + 1

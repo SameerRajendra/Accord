@@ -21,10 +21,14 @@ htmlcov/
 .env.*
 !.env.example
 
-# Raw + processed data (large; regenerate via data/ingest_casino.py --download).
-# NOTE: verify CaSiNo license before committing any raw data files.
+# Raw + processed data (large; regenerate via data/ingest_craigslist.py --download).
+# NOTE: verify the dataset's license before committing any raw data files.
 data/raw/
 data/processed/
+
+# Trained model artifacts (large binaries; regenerate via evals/*.py — the
+# training/eval code is committed, the artifact itself is not).
+models/
 
 # results/ is intentionally committed (reproducible eval outputs) — see results/.gitkeep
 

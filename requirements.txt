@@ -3,8 +3,32 @@
 # Phase 0 — data spine
 pydantic>=2.6,<3
 
-# Phase 1 — analysis + baseline evals  (anthropic, scikit-learn, xgboost, pandas)
-# Phase 2 — RAG                         (psycopg[binary], pgvector, openai/sentence-transformers)
-# Phase 3 — agent                       (langgraph)
+# Phase 1 — analysis + baseline evals
+xgboost>=2.0
+scikit-learn>=1.3
+pandas>=2.0
+joblib>=1.3
+# LLM calls (sentiment.py, behaviors.py) go through LangChain's ChatOpenAI,
+# pointed at self-hosted SGLang (base_url override) — no hosted API, ever.
+# "OpenAI" here names the wire protocol these clients speak, not the
+# provider. See DESIGN.md §5.
+openai>=1.30
+langchain>=0.2
+langchain-openai>=0.1
+
+# Phase 2 — RAG
+# pgvector via LangChain's PGVector (DESIGN.md §5), not a hand-rolled client.
+psycopg[binary]>=3.1
+langchain-postgres>=0.0.6
+# NOTE: langchain-postgres's exact API has moved fast across versions —
+# verify on the cluster before assuming a specific method signature.
+
+# Phase 3 — agent
+langgraph>=0.2
+# MCP server exposing retrieve_precedent / predict_outcome / analyze_sentiment
+# (DESIGN.md §5). Package name/API may need adjusting once verified — the MCP
+# Python SDK's server surface has moved around across versions.
+mcp>=1.0
+
 # Phase 4 — serve                       (fastapi, uvicorn)
 # Phase 5 — observability               (langfuse, wandb)
