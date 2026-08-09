@@ -1,12 +1,12 @@
 # Accord — System Design
 
 **Scope:** the systems/engineering design for Accord, a negotiation-intelligence API whose
-**entire LLM stack is self-hosted open models** (target: TensorRT-LLM/Triton on H100/H200; see §3
-for current-vs-target reality) and whose orchestration layer is **LangChain + LangGraph, with an
-MCP server exposing its own tools** (§5). No hosted LLM API is used at inference time. This
-document is the authoritative architecture reference; where it differs from [SPEC.md](SPEC.md)
-(which framed a Claude-API-default build, "direct SDK for single-shot calls," and no MCP at all),
-**this document supersedes it** on serving, orchestration, and tool exposition.
+**entire LLM stack is self-hosted open weights** (no hosted LLM API is ever called at inference
+time) and whose orchestration layer is **LangChain + LangGraph, with an MCP server exposing its
+own tools** (§5). This document is the authoritative architecture reference; where it differs
+from [SPEC.md](SPEC.md) (which framed a Claude-API-default build, "direct SDK for single-shot
+calls," and no MCP), **this document supersedes it** on serving, orchestration, and tool
+exposition.
 
 Design ethos, unchanged from the SPEC: **measure everything.** Every capability claim — accuracy,
 latency, throughput, cost — is backed by a committed benchmark in `results/`, the same honest
@@ -27,16 +27,22 @@ Given a negotiation transcript (normalized [`Transcript`](data/schema.py)), `/an
 ### Non-functional (design targets — validated in Phase 5, not asserted here)
 | Dimension | Target | Rationale |
 |---|---|---|
-| Latency (full `/analyze`) | p50 ≤ ~10 s, p95 ≤ ~18 s, streamed | Analysis endpoint, not a chat turn; recommendation dominates. |
+| Latency (full `/analyze`, warm) | p50 ≤ ~10 s, p95 ≤ ~18 s, streamed | Analysis endpoint, not a chat turn; recommendation dominates. |
+| Cold-start (first request after idle) | ≤ ~90 s | Explicit tradeoff of scale-to-zero (§3); documented, not hidden. |
 | Throughput | saturate GPU: maximize tok/s at fixed p95 | The number that justifies self-hosting. |
-| Cost | report $/request and $/1M tokens **amortized from GPU-hour** | Honest self-host economics (see §8). |
-| Reproducibility | committed eval outputs + pinned engine build configs | A reviewer can rebuild the engines and re-run. |
-| Observability | per-stage trace, TTFT/TPOT, GPU util, cost | What production inference teams actually watch. |
+| Cost | report $/request and $/1M tokens **amortized from GPU-second** | Honest self-host economics on serverless GPU (see §8). |
+| Reproducibility | committed eval outputs + pinned engine build configs + `modal deploy` from committed source | A reviewer can redeploy and re-run. |
+| Observability | Langfuse traces per stage, GPU-second/request | What production inference teams actually watch. |
 
 ### Constraints
-- **Hardware:** H100/H200 (Hopper) — FP8 tensor cores, the reason TensorRT-LLM is the right serving stack.
-- **Serving:** TensorRT-LLM engines behind Triton Inference Server (in-flight batching, paged KV cache).
-- **Models:** open-weight only. No Claude/OpenAI/etc. at inference *or* as an eval judge.
+- **Serving surface:** rented cloud GPU (Modal serverless, H100), scale-to-zero. No always-on
+  GPU rental — the demo idles at ~$0 and pays only per request.
+- **Serving stack:** SGLang serving Qwen2.5-7B-Instruct on the GPU container. TensorRT-LLM +
+  Triton remains the stretch-goal engine story (§7) for a quantization-ablation section — not
+  built.
+- **Models:** open-weight only. No Claude/OpenAI/etc. at inference *or* as an eval judge. Managed
+  OSS-inference endpoints (Together / Fireworks / Cerebras / Groq) are a documented fallback if
+  the demo cold-start proves unusable, but the default is self-hosted SGLang on rented GPU.
 - **Team:** solo. Favor one serving path done rigorously over many done shallowly.
 - **Data:** CraigslistBargain (real buyer/seller price-haggling; He et al., EMNLP 2018) — replaced
   an earlier CaSiNo-based ingestion. Generalization to Sawant's thesis's business-contract framing
@@ -47,156 +53,199 @@ Given a negotiation transcript (normalized [`Transcript`](data/schema.py)), `/an
 ## 2. High-level architecture
 
 ```
-                                   ┌───────────────────────────── FastAPI  /analyze ─────────────────────────────┐
-  transcript (JSON) ──► Pydantic ─►│                                                                              │
-                                   │  ┌──────────── run concurrently ────────────┐                               │
-                                   │  │ 1. sentiment/escalation (batched, guided) │──┐                           │
-                                   │  │ 2. extreme-behavior (guided JSON)         │──┤   both hit the SAME        │
-                                   │  └───────────────────────────────────────────┘  │   small-model engine      │
-                                   │  ┌────────────────────────────┐                  ▼                           │
-                                   │  │ 3. retrieve precedent       │──► pgvector (case corpus, HNSW)             │
-                                   │  └────────────────────────────┘                                              │
-                                   │  ┌────────────────────────────┐                                              │
-                                   │  │ 4. outcome model (XGBoost)  │  (features from transcript + sentiment)     │
-                                   │  └────────────────────────────┘                                              │
-                                   │  ┌──────────────────────────────────────────────┐                           │
-                                   │  │ 5. LangGraph agent → recommend next move      │──► large-model engine     │
-                                   │  │    (state: analysis + retrieved cases)        │    (guided JSON, streamed)│
-                                   │  └──────────────────────────────────────────────┘                           │
-                                   └───────────────────┬──────────────────────────────────────────────────────┘
-                                                       │ every LLM call ──► Triton (TensorRT-LLM backend)
-                                                       ▼
-        ┌───────────────────── GPU serving layer (H100/H200) ─────────────────────┐
-        │  Triton Inference Server                                                 │
-        │   ├─ TRT-LLM engine: small instruct model (classification/behavior)      │
-        │   ├─ TRT-LLM engine: large instruct model (recommendation agent)         │
-        │   └─ embedding engine: TensorRT-optimized encoder (BGE) — retrieval      │
-        │  in-flight (continuous) batching · paged KV cache · FP8 weights/KV        │
-        └──────────────────────────────────────────────────────────────────────────┘
-                                                       │ traces + metrics
-                                                       ▼
-                             Langfuse (self-host) + Prometheus/Grafana + results/*.csv
+     ┌──────── Streamlit UI (Modal ASGI, CPU, scale-to-zero) ────────┐
+     │  transcript textarea → POST /analyze → results table          │
+     └───────────────────────────────┬──────────────────────────────┘
+                                     │ HTTPS
+                                     ▼
+     ┌──────── FastAPI /analyze (Modal ASGI, colocated on GPU) ─────┐
+     │                                                                │
+     │  ┌─ run concurrently ────────────────────────────────────┐    │
+     │  │ 1. sentiment/escalation (batched, structured output)  │──┐ │
+     │  │ 2. extreme-behavior (structured output)               │──┤ │
+     │  └──────────────────────────────────────────────────────┘  │ │
+     │  ┌──────────────────────────┐                              ▼ │
+     │  │ 3. retrieve precedent    │──► Neon Postgres + pgvector    │
+     │  └──────────────────────────┘    (HNSW, managed, free tier)   │
+     │  ┌──────────────────────────┐                                 │
+     │  │ 4. outcome model (XGBoost)│                                │
+     │  └──────────────────────────┘                                 │
+     │  ┌────────────────────────────────────────┐                   │
+     │  │ 5. LangGraph agent → recommend         │──► SGLang         │
+     │  └────────────────────────────────────────┘                   │
+     │                                                                │
+     └──────────────────────┬───────────────────────────────────────┘
+                            │ localhost (same container)
+                            ▼
+     ┌──────── SGLang server (H100, scale-to-zero) ────────┐
+     │  Qwen2.5-7B-Instruct                                 │
+     │  RadixAttention prefix cache · continuous batching   │
+     │  weights cached on Modal Volume (no repeat download) │
+     └──────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                Langfuse (managed cloud, free tier)
 ```
 
-**Model tiering** (defaults — swappable):
-- **Small engine** (classification + behavior): a 7–8B instruct model (e.g. Qwen2.5-7B-Instruct). High call volume, latency-sensitive, cheap. One engine serves both stages.
-- **Large engine** (recommendation agent): a 32B on a single H100, or a 70B (FP8) on H200 / 2×H100. Quality-sensitive, lower volume.
-- **Embeddings**: BGE-family encoder, TensorRT-optimized (TRT-LLM is generative-only, so embeddings run on a sibling TensorRT engine / Triton model, not the LLM backend — stated plainly so the boundary is clear).
+**Model tiering (current — demo scale):** one 7B instruct model serves all LLM stages
+(sentiment, behavior, recommendation). Growing to a small+large tier (7B classification + 32B
+recommendation, or 70B on H200) is a §8 revisit-as-it-grows item — not built until the demo has
+traffic that warrants two engines and their KV-cache footprint.
+
+**Embeddings:** hosted `sentence-transformers/all-MiniLM-L6-v2` (384-d) called via LangChain's
+`HuggingFaceEmbeddings`, loaded once per container. This is the pragmatic Phase 2 choice — a
+sibling SGLang embedding-server (as originally described) is deferred until measured latency
+warrants a second serving process on the GPU container.
 
 ---
 
 ## 3. Serving layer (the centerpiece)
 
-This is where the project earns its "inference systems" claim. The engine-build pipeline is committed
-and reproducible.
+This is where the project earns its "inference systems" claim. The engine-build pipeline is
+committed and reproducible.
 
-> **Target vs. current reality:** everything below is the target architecture. What's actually
-> running on the cluster today is **SGLang** serving instruct models directly (Qwen2.5-7B-Instruct
-> for Accord's analysis calls, on its own port; a separate Llama-3.1-8B instance for a different
-> project shares the same node). No TensorRT-LLM engine has been built yet — that remains the
-> stretch goal for the quantization-ablation story (§7), tracked honestly rather than implied as
-> done. SGLang is a legitimate, fast serving choice in its own right (RadixAttention prefix
-> caching, continuous batching), just not the one this section describes.
+### Current runtime — Modal serverless, SGLang, scale-to-zero
 
-### Engine build pipeline
+- **Where:** [Modal](https://modal.com) serverless GPU container, one H100 per container,
+  `max_containers=1` for the demo. Deploy config: [infra/modal/app.py](infra/modal/app.py).
+- **What:** [SGLang](https://github.com/sgl-project/sglang) starts on container-enter, serves
+  Qwen2.5-7B-Instruct on localhost:30000, and stays hot for the container's lifetime. FastAPI
+  runs as a Modal ASGI app inside the same container and talks to SGLang over localhost.
+- **Cold-start economics:** the Qwen2.5-7B FP16 weights (~15 GB) are cached on a Modal Volume
+  (`qwen25-7b-cache`), so the first-ever download happens once and subsequent cold starts avoid
+  re-download. SGLang startup on H100 is roughly 60–90 s from a cached weights volume; the first
+  request after idle pays that cost, all subsequent requests are warm (~seconds).
+- **Idle cost:** ~$0. Modal charges per GPU-second and scales to zero after `scaledown_window`
+  (default 5 min). This is the tradeoff Q4 of the pivot decision optimized for: near-zero when
+  no one is looking at the demo, pay-per-use when Yash (or a recruiter) actually clicks.
+
+### Target — TensorRT-LLM + Triton (stretch, not built)
+
+The engine-build pipeline below is the target architecture for the quantization-ablation story
+(§7). Nothing here is currently running; kept as an honest north-star, not implied as done.
+
 ```
 HF checkpoint ─► quantize (ModelOpt: FP8 / INT4-AWQ) ─► trtllm-build (engine) ─► Triton model repo ─► serve
 ```
-- **Quantization on Hopper:** FP8 (E4M3) weights **and** KV cache is the headline config — H100/H200 FP8 tensor cores are the reason to be on this hardware. INT4-AWQ built as the memory-savings comparison point.
-- **Build knobs pinned in `infra/`:** `max_batch_size`, `max_num_tokens`, `max_input_len`, `max_seq_len`, paged-KV block size, `use_paged_context_fmha`, tensor-parallel degree. These *are* the experiment surface — committed so results are reproducible.
-- **In-flight (continuous) batching** via the TRT-LLM Triton backend: new requests join the running batch at token granularity instead of waiting for a static batch to drain — this is what turns idle GPU into throughput.
 
-### Structured / guided decoding
+- **Quantization on Hopper:** FP8 (E4M3) weights **and** KV cache is the headline config — H100
+  FP8 tensor cores are the reason to be on this hardware. INT4-AWQ built as the memory-savings
+  comparison point.
+- **Build knobs pinned in `infra/`:** `max_batch_size`, `max_num_tokens`, `max_input_len`,
+  `max_seq_len`, paged-KV block size, `use_paged_context_fmha`, tensor-parallel degree. These
+  *are* the experiment surface — committed so results are reproducible.
+- **In-flight (continuous) batching** via the TRT-LLM Triton backend: new requests join the
+  running batch at token granularity instead of waiting for a static batch to drain.
+
+### Structured output
+
 Behavior detection and the recommendation both require schema-valid JSON that maps 1:1 to the
-[`api/models.py`](api/models.py) Pydantic contracts. TensorRT-LLM's **grammar-constrained decoding
-(XGrammar)** enforces the JSON schema at decode time, so outputs parse without a repair loop. Per-turn
-sentiment uses a constrained label set the same way. This removes an entire class of "LLM returned
-almost-JSON" failures and is a concrete correctness lever, not a nicety.
-
-### Two engines, one GPU (single-H100 layout)
-| Engine | Precision | ~Weights | Notes |
-|---|---|---|---|
-| 7–8B classification/behavior | FP8 | ~8 GB | high concurrency, short outputs |
-| 32B recommendation | FP8 | ~34 GB | streamed, longer outputs |
-| BGE embedder | FP16/FP8 | ~1–2 GB | retrieval |
-| **Paged KV cache** | FP8 | remainder of 80 GB | sized from `max_num_tokens` × concurrency |
-
-On **H200 (141 GB)** the large engine becomes a 70B at FP8. On a single H100, keep the 32B or split
-across 2×H100 (classification+embeddings on GPU0, recommendation on GPU1) to avoid KV-cache contention.
+[`api/models.py`](api/models.py) Pydantic contracts. In the current SGLang runtime this goes
+through LangChain's `.with_structured_output(PydanticModel)`, which uses SGLang's
+`response_format={"type": "json_schema"}` support to constrain decode — a structured-output
+guarantee at the serving layer, not a post-hoc JSON-repair loop. If the TensorRT-LLM engine is
+built later, XGrammar becomes the constrained-decoding path with the same public contract.
 
 ---
 
 ## 4. Component deep-dives
 
-- **Sentiment/escalation** — one *batched* guided-decoding call over all utterances, not one call per turn. This is the key latency decision: an N-turn dialogue is one request with a compact per-turn JSON array out, not N round-trips.
-- **Extreme-behavior** — one guided-JSON call producing typed flags; shares the small engine.
-- **Outcome model** — **XGBoost**, not an LLM: features = priority profile + per-party strategy counts + sentiment trajectory + turn/word counts. ~1–5 ms, and it gives a *calibrated* probability (isotonic/Platt) with a committed calibration curve. This is deliberately the one non-LLM component — cheaper, faster, and honestly benchmarkable against an LLM zero-shot baseline (open model) as an ablation.
-- **RAG / pgvector** — corpus = normalized cases (setup + strategies + outcome + lesson) built by `build_case_corpus.py`, embedded and stored in Postgres/pgvector with an **HNSW** index. `retrieval_eval.py` reports recall@k / MRR on held-out cases.
-- **Agent (LangGraph)** — state machine: `analyze → retrieve → recommend`. Precedent cases are injected into the recommendation prompt. The **RAG-vs-no-RAG ablation** toggles the retrieve node — the signature experiment answering "does retrieval actually help the recommendation, or just add latency?"
+- **Sentiment/escalation** — one *batched* structured-output call over all utterances, not one
+  call per turn. This is the key latency decision: an N-turn dialogue is one request with a
+  compact per-turn JSON array out, not N round-trips.
+- **Extreme-behavior** — one structured-JSON call producing typed flags; same engine.
+- **Outcome model** — **XGBoost**, not an LLM: features = priority profile + per-party dialogue-
+  act counts + turn/word counts. ~1–5 ms, and it gives a *calibrated* probability (isotonic) with
+  a committed calibration curve. This is deliberately the one non-LLM component — cheaper,
+  faster, and honestly benchmarkable against an LLM zero-shot baseline (open model) as an
+  ablation.
+- **RAG / pgvector on Neon** — corpus = normalized cases (setup + strategies + outcome + lesson)
+  built by [`data/build_case_corpus.py`](data/build_case_corpus.py), embedded with
+  `all-MiniLM-L6-v2`, stored in Neon Postgres with an **HNSW** index
+  (`m=16, ef_construction=64`). `retrieval_eval.py` reports recall@k / MRR on held-out cases.
+- **Agent (LangGraph)** — state machine: `analyze → retrieve → recommend`. Precedent cases are
+  injected into the recommendation prompt. The **RAG-vs-no-RAG ablation** toggles the retrieve
+  node — the signature experiment answering "does retrieval actually help the recommendation, or
+  just add latency?"
 
 ---
 
 ## 5. Agent orchestration & tool exposition: LangChain, LangGraph, MCP
 
 Decided 2026-07-12, reversing SPEC.md's original "direct SDK for single-shot calls" framing.
-LangChain and MCP are now used throughout the pipeline, not just LangGraph for the agent —
-recorded here because it changes several already-described components above.
+LangChain and MCP are used throughout the pipeline.
 
-- **LangChain for single-shot calls too.** `analysis/sentiment.py` and `analysis/behaviors.py`
-  use LangChain's `ChatOpenAI` client pointed at the self-hosted SGLang endpoint (`base_url`
-  override, dummy API key). The class name is the wire-protocol it speaks (OpenAI-compatible
-  REST), **not** the provider — no OpenAI API is involved anywhere in this project, consistent
-  with the self-hosted-only constraint (§1). Structured output goes through
-  `.with_structured_output(PydanticModel)` rather than a hand-rolled JSON-parsing/repair loop.
-  This replaces the originally-planned raw `openai` client calls, trading a heavier dependency
-  for one consistent structured-output pattern across every LLM call in the repo.
-- **LangChain's `PGVector`** (the `langchain_postgres` package, not the older deprecated
-  `langchain_community` one) is the retrieval vector store — `rag/retriever.py` wraps
+- **LangChain for single-shot calls.** [`analysis/sentiment.py`](analysis/sentiment.py) and
+  [`analysis/behaviors.py`](analysis/behaviors.py) use LangChain's `ChatOpenAI` client pointed
+  at the self-hosted SGLang endpoint (`base_url` override, dummy API key). The class name is the
+  wire protocol it speaks (OpenAI-compatible REST), **not** the provider — no OpenAI API is
+  involved anywhere in this project, consistent with the self-hosted-only constraint (§1).
+  Structured output goes through `.with_structured_output(PydanticModel)` rather than a
+  hand-rolled JSON-parsing/repair loop.
+- **LangChain's `PGVector`** (the `langchain_postgres` package, not the deprecated
+  `langchain_community` one) is the retrieval vector store —
+  [`rag/retriever.py`](rag/retriever.py) wraps
   `PGVector(embeddings=..., connection=...).as_retriever(search_kwargs={"k": ...})` rather than
   a hand-rolled `psycopg` + raw-SQL client.
-- **MCP server** (`mcp_server/tools.py`, built with FastMCP) exposes Accord's own capabilities —
-  `retrieve_precedent`, `predict_outcome`, `analyze_sentiment` — as MCP tools. Any MCP client
-  (Claude Desktop, another agent) can call Accord's negotiation-intelligence pipeline directly.
-  The LangGraph agent calls the **same underlying Python functions directly**, not through its
-  own MCP server as a client — chosen over a full server+client round-trip for the agent itself
-  (see the trade-off table, §8) to avoid a pointless self-network-hop. This mirrors the
-  tool-exposition pattern from the author's other project (AEGOF v2's FastMCP GPU-profiling
-  harness), applied here to a different domain.
-- **Embeddings still go through the self-hosted stack** — `rag/embed.py` calls
-  `langchain_openai.OpenAIEmbeddings` (again: protocol name, not provider) pointed at an
-  embedding-serving SGLang instance, not a bare `sentence-transformers` script — consistent with
-  running the embedder through the same LLM-inference-engine path as the rest of the pipeline.
+- **MCP server** ([`mcp_server/tools.py`](mcp_server/tools.py), FastMCP) exposes Accord's own
+  capabilities — `retrieve_precedent`, `predict_outcome`, `analyze_sentiment` — as MCP tools.
+  Any MCP client (Claude Desktop, another agent) can call Accord's negotiation-intelligence
+  pipeline directly. The LangGraph agent calls the **same underlying Python functions
+  directly**, not through its own MCP server as a client — chosen over a full server+client
+  round-trip for the agent itself (see the trade-off table, §8) to avoid a pointless
+  self-network-hop. This mirrors the tool-exposition pattern from the author's other project
+  (AEGOF v2's FastMCP GPU-profiling harness), applied here to a different domain.
+- **Embeddings** use LangChain's `HuggingFaceEmbeddings` with `all-MiniLM-L6-v2` loaded in-
+  process on the Modal container — kept out of the SGLang path in the current phase to avoid
+  standing up a second serving process for a small model. Moving embeddings behind a sibling
+  SGLang instance is a §8 revisit-as-it-grows item.
+- **Observability via Langfuse (managed cloud).** Every LangChain call and LangGraph node emits
+  a Langfuse trace; the callback handler is wired in [`agent/callbacks.py`](agent/callbacks.py)
+  and env-gated (no `LANGFUSE_PUBLIC_KEY` → no-op, so local runs without a Langfuse account
+  still work). This replaces the "Langfuse self-host" line from the pre-pivot design;
+  self-hosting Langfuse alongside a scale-to-zero serving story is overkill for a demo.
 
 ---
 
 ## 6. Scale & reliability
 
-### Latency budget (single `/analyze`, design targets to validate)
+### Latency budget (single `/analyze`, warm — design targets to validate)
 | Stage | Model | ~Output tok | Est. latency | On critical path? |
 |---|---|---|---|---|
-| sentiment (batched) | 7–8B FP8 | ~300–500 | ~1.5–3 s | yes (parallel w/ behavior+retrieve) |
-| behavior | 7–8B FP8 | ~150 | ~1–1.5 s | overlaps sentiment (same engine → may queue) |
-| retrieve | BGE + pgvector | — | ~0.1 s | overlaps |
+| sentiment (batched) | Qwen2.5-7B | ~300–500 | ~1.5–3 s | yes (parallel w/ behavior+retrieve) |
+| behavior | Qwen2.5-7B | ~150 | ~1–1.5 s | overlaps sentiment (same engine → may queue) |
+| retrieve | MiniLM + Neon pgvector | — | ~0.1–0.3 s (Neon RTT included) | overlaps |
 | outcome | XGBoost | — | ~5 ms | after sentiment |
-| **recommend** | 32B/70B FP8 | ~400 | **~5–10 s** | yes — **dominant cost** |
-| **critical path** | | | **~8–12 s p50** | streamed to cut perceived latency |
+| **recommend** | Qwen2.5-7B | ~400 | **~3–6 s** | yes — **dominant cost** |
+| **critical path** | | | **~5–9 s p50 (warm)** | streamed to cut perceived latency |
+| **cold-start penalty** | container + SGLang boot | — | **~60–90 s** | first request after idle only |
 
-The recommendation is the bottleneck by design (biggest model, longest output). Mitigations:
-**stream** the recommendation token-by-token; run the analysis stages concurrently; keep the classification
-engine warm so TTFT stays low.
+The recommendation is the bottleneck by design (longest output). Mitigations: **stream** the
+recommendation token-by-token; run the analysis stages concurrently; SGLang's RadixAttention
+prefix cache keeps repeated-prompt overhead low.
 
 ### Throughput & GPU memory
-- Continuous batching means per-request latency rises under load but aggregate tok/s climbs — the trade the benchmark quantifies (latency–throughput Pareto curve at fixed p95).
-- KV cache is the real capacity limit, not weights. `max_num_tokens` and concurrency are tuned against 80 GB (H100) / 141 GB (H200); FP8 KV roughly halves cache footprint vs FP16, directly raising max concurrency.
+- SGLang's continuous batching means per-request latency rises under load but aggregate tok/s
+  climbs — the trade the benchmark quantifies (latency–throughput Pareto curve at fixed p95).
+- With `max_containers=1` there's no autoscale-out — the demo intentionally caps concurrency at
+  one container's worth. Raising `max_containers` on Modal is a config change, not a code change,
+  if the demo ever needs to fan out.
 
 ### Reliability / graceful degradation
-- **Retrieval down** → still return sentiment + behavior + outcome + a no-precedent recommendation (agent's retrieve node degrades to empty context) rather than failing the request.
-- **Guided decoding** guarantees parseable structured output; a hard schema-validation failure returns a typed error, never malformed JSON.
-- **Triton health/readiness** gates `/health`; engine OOM under load is prevented by the pinned `max_batch_size`/`max_num_tokens` rather than discovered in production.
-- **Retries** only on idempotent read stages (retrieve); generation is not blindly retried (cost + latency).
+- **Retrieval down (Neon unavailable)** → still return sentiment + behavior + outcome + a
+  no-precedent recommendation (agent's retrieve node degrades to empty context) rather than
+  failing the request.
+- **Structured output** guarantees parseable JSON at the serving layer; a hard schema-validation
+  failure returns a typed error, never malformed JSON.
+- **SGLang health** gated on container startup; the ASGI app doesn't accept traffic until
+  SGLang's `/v1/models` returns.
+- **Retries** only on idempotent read stages (retrieve); generation is not blindly retried
+  (cost + latency).
 
 ### Observability
-Langfuse traces each stage; Prometheus scrapes Triton (queue time, compute time, TTFT, TPOT, GPU util, KV-cache utilization); `results/latency_cost.csv` commits p50/p95/TTFT/TPOT and $/request.
+Langfuse traces each stage (sentiment / behavior / retrieve / outcome / recommend), with
+LangGraph nodes visible as spans. `results/latency_cost.csv` commits p50/p95 warm-latency and
+$/request derived from Modal GPU-second billing.
 
 ---
 
@@ -205,16 +254,24 @@ Langfuse traces each stage; Prometheus scrapes Triton (queue time, compute time,
 Two layers — **serving** (the GPU/inference story) and **task** (does it actually work):
 
 **Serving / inference**
-- **Quantization ablation:** FP8 vs FP16 vs INT4-AWQ — latency (TTFT/TPOT), throughput (tok/s), peak memory, **and task-accuracy delta** (the honest part: quantization that tanks F1 is reported, not hidden).
-- **TRT-LLM vs baseline:** compiled TRT-LLM engine vs a naive HF `transformers` serving loop on the same model/GPU — the speedup the engine buys.
-- **Batching curve:** throughput vs concurrency at fixed p95 (the latency–throughput Pareto).
+- **Cold-start vs warm:** first-request-after-idle latency vs subsequent-request latency —
+  reported as two distinct numbers, not averaged. Documents the scale-to-zero tradeoff.
+- **Batching curve:** throughput vs concurrency at fixed p95 on SGLang (the latency–throughput
+  Pareto for the current runtime).
+- **[Stretch] Quantization ablation:** FP8 vs FP16 vs INT4-AWQ — latency (TTFT/TPOT), throughput
+  (tok/s), peak memory, **and task-accuracy delta**. Requires the TensorRT-LLM engine build
+  (§3); explicitly not done in the demo phase.
+- **[Stretch] TRT-LLM vs SGLang:** the speedup a compiled engine buys over SGLang on the same
+  model/GPU. Same caveat.
 
 **Task**
-- `sentiment.csv` — F1 vs labels (served model vs open zero-shot baseline).
-- `retrieval.csv` — recall@k, MRR.
+- `sentiment.csv` — F1 vs labels (Qwen2.5-7B via SGLang vs open zero-shot baseline).
+- `retrieval.csv` — recall@k, MRR on held-out cases.
 - `outcome.csv` — F1, ROC-AUC, calibration curve (XGBoost vs LLM zero-shot).
-- `agent_eval.csv` — **RAG vs no-RAG**, LLM-judge scored (judge = a *different, larger* open model than the one under test, to blunt self-preference bias; judge reliability is named as a limitation).
-- `latency_cost.csv` — p50/p95, $/request, $/1M tokens amortized.
+- `agent_eval.csv` — **RAG vs no-RAG**, LLM-judge scored (judge = a *different, larger* open
+  model than the one under test, to blunt self-preference bias; judge reliability named as a
+  limitation).
+- `latency_cost.csv` — p50/p95 warm, cold-start, $/request (Modal GPU-second amortized).
 
 ---
 
@@ -222,23 +279,34 @@ Two layers — **serving** (the GPU/inference story) and **task** (does it actua
 
 | Decision | Chosen | Alternative | Why / cost |
 |---|---|---|---|
-| Serving stack | **TensorRT-LLM + Triton** (target) / **SGLang** (current, §3 caveat) | vLLM | Max latency/throughput ceiling on Hopper (FP8, compiled engines); cost is a heavier build pipeline (checkpoint convert → quantize → `trtllm-build`) vs vLLM's near-zero setup. Deliberate: the build pipeline *is* part of the showcase — but SGLang is what's actually running today (see §3), since no engine has been built yet. |
-| LLM provider | **Self-hosted open** | Claude/OpenAI API | Full control of latency/cost/quantization and a real GPU-serving artifact; cost is that recommendation quality must be earned from open weights, and there's no managed autoscaling. |
-| Recommendation model | 32B (H100) / 70B (H200) | 7B everywhere | Reasoning-heavy step needs the capacity; cost is it's the latency + memory bottleneck. |
+| Serving host | **Modal serverless GPU (scale-to-zero)** | Always-on rented H100 (RunPod/Lambda dedicated) | Idle cost ~$0 for a demo nobody's hitting; cost is a 60–90 s cold-start penalty on the first request after idle — explicitly documented (§3, §6), not hidden. Always-on would be ~$1500+/mo, wrong shape for "shareable portfolio demo." |
+| Serving stack | **SGLang** (current) / **TensorRT-LLM + Triton** (target) | vLLM | SGLang: RadixAttention prefix caching, continuous batching, cheap to run under Modal; TRT-LLM the eventual quantization-ablation vehicle. vLLM would work too; SGLang chosen because the same instance can serve chat + structured output cleanly. |
+| LLM provider | **Self-hosted open weights on rented GPU** | Managed OSS-inference API (Together / Fireworks / Cerebras / Groq); or hosted API (Claude/OpenAI) | Full control of latency/cost/quantization and a real GPU-serving artifact; cost is recommendation quality must be earned from open weights and there's no managed autoscaling. Managed OSS-inference is the documented fallback if cold-start proves unusable in practice. Hosted API is explicitly out of scope. |
+| Vector store | **Neon Postgres + pgvector (HNSW) via LangChain's `PGVector`** | Pinecone/Weaviate/Qdrant, or self-hosted Apptainer pgvector | Managed free tier fits demo scale (< 1M vectors); no infra to maintain vs the Apptainer instance used pre-pivot; one shareable connection string vs a per-Slurm-allocation container. Cost: another external dependency (Neon) added to the runtime path. |
+| Embeddings | **`all-MiniLM-L6-v2` via `HuggingFaceEmbeddings`, in-process** | Sibling SGLang embedding-server (BGE-family) | Smaller footprint on the GPU container, no second serving process to manage; cost is embedding-quality ceiling of MiniLM (384-d) vs BGE (768-d). Revisit if retrieval recall@k underperforms. |
 | Outcome predictor | **XGBoost** | LLM classifier | ~1000× cheaper/faster, calibrated probabilities, honestly benchmarkable; cost is feature engineering. |
-| Vector store | **pgvector (HNSW) via LangChain's `PGVector`** | Pinecone/Weaviate/Qdrant, or a hand-rolled psycopg client | One service, real SQL, self-hostable, plenty for corpus scale; going through LangChain's abstraction (§5) costs some transparency vs. hand-written SQL but keeps one consistent library across the pipeline. |
-| Single-shot LLM calls | **LangChain (`ChatOpenAI` + structured output)** | raw `openai` client | Consistent structured-output pattern across every LLM call in the repo, and is itself a demonstrable piece of the #1 skill gap (LLM apps & agents); cost is an extra dependency layer over a plain HTTP client that SPEC.md originally called for. |
+| Single-shot LLM calls | **LangChain (`ChatOpenAI` + structured output)** | raw `openai` client | Consistent structured-output pattern across every LLM call in the repo, and demonstrable evidence of the #1 skill gap (LLM apps & agents); cost is an extra dependency layer. |
 | Tool exposition | **MCP server (FastMCP)**, agent calls tools directly (not as its own MCP client) | Internal-only Python functions, no MCP; or agent-as-MCP-client | Makes the pipeline consumable by any MCP client (Claude Desktop, other agents) — a real, demonstrable integration point beyond the REST API; the agent skips a self-network-hop by calling the same functions directly rather than round-tripping through its own server. |
-| Structured output | **Grammar-constrained (XGrammar)** | prompt + JSON-repair loop | Guarantees valid contracts at decode time, removes a failure class; cost is a small decode overhead + grammar setup. |
-| Cost model | **amortized GPU-hour** | per-token API price | Honest: self-hosting wins **only at high utilization** — at ~$2.5/H100-hr and a saturated ~3k tok/s that's ≈ $0.2/1M output tokens (well under hosted-API rates), but an **idle** GPU is pure burn. The benchmark reports the utilization break-even, not a flattering single number. |
+| UI | **Streamlit on Modal (separate ASGI app)** | Next.js on Vercel; FastAPI + HTMX | One Python file, deploys as its own Modal ASGI so the UI can be updated without redeploying the GPU container. Ugly but shareable in an afternoon. Right choice for "minimal demo for one reviewer." |
+| Observability | **Langfuse managed cloud (free tier)** | Self-hosted Langfuse + Prometheus/Grafana | Zero infra to run alongside the scale-to-zero serving story; free tier covers demo scale; env-gated so local runs without keys are no-ops. Self-hosting would require an always-on box which defeats the point of the pivot. |
+| Cost model | **amortized GPU-second (Modal invoice)** | per-token API price | Honest for serverless: cost = GPU-seconds-billed / requests-served. When idle: $0. When busy: reports the real number Modal charges, not a hypothetical utilization scenario. |
 
 ### What I'd revisit as it grows
-- **Speculative decoding** (draft-model or Medusa/EAGLE) on the large engine to cut recommendation latency.
-- **Disaggregated serving** — separate prefill/decode pools, or split classification vs recommendation onto dedicated GPUs, once one GPU's KV cache is the bottleneck.
-- **Autoscaling / scale-to-zero** to fix the idle-GPU cost problem for bursty traffic (the self-host Achilles heel).
-- **A fine-tuned small classifier** (LoRA) for sentiment/behavior if the zero-shot open baseline underperforms the labels.
-- **Multi-corpus generalization** — the consumer-haggling→business-contract gap is untested (§9); adding a second corpus is the honest next experiment.
-- **Actually build the TensorRT-LLM engines** — §3's engine-build pipeline is still the target architecture; SGLang is the pragmatic Phase 1 stand-in. Revisit once the quantization-ablation story (§7) needs the real comparison.
+- **Two-tier model serving** — 7B classification + 32B recommendation (or 70B on H200), once
+  demo traffic warrants two engines and their KV-cache footprint.
+- **Speculative decoding** (draft-model or Medusa/EAGLE) on the recommendation to cut latency.
+- **Disaggregated serving** — separate prefill/decode pools, once one GPU's KV cache is the
+  bottleneck.
+- **Sibling SGLang embedding-server (BGE)** if MiniLM retrieval recall@k underperforms.
+- **A fine-tuned small classifier** (LoRA) for sentiment/behavior if the zero-shot open baseline
+  underperforms the labels.
+- **Multi-corpus generalization** — the consumer-haggling→business-contract gap is untested
+  (§9); adding a second corpus is the honest next experiment.
+- **Actually build the TensorRT-LLM engines** — §3's engine-build pipeline is still the target
+  architecture; SGLang is the pragmatic demo runtime. Revisit once the quantization-ablation
+  story (§7) needs the real comparison.
+- **Raise `max_containers`** on Modal beyond 1, once concurrent demo traffic matters. Config
+  change, not code change.
 
 ---
 
@@ -250,5 +318,9 @@ Two layers — **serving** (the GPU/inference story) and **task** (does it actua
   are rule-based, not human-annotated, and are a coarser signal than a persuasion-strategy or
   sentiment taxonomy — treated as a weak proxy in early evals, explicitly caveated as such, not
   gold-standard labels.
-- **No hosted-API baseline** by design — comparisons are open-vs-open (quantized vs full-precision, served vs zero-shot, RAG vs no-RAG), so "beats a frontier API" is explicitly *not* a claim made here.
+- **No hosted-API baseline** by design — comparisons are open-vs-open (served vs zero-shot,
+  RAG vs no-RAG), so "beats a frontier API" is explicitly *not* a claim made here.
 - The eval judge is itself an open model; LLM-judge scores carry self-consistency and bias caveats.
+- **Cold-start latency is real.** A reviewer hitting the demo cold pays ~60–90 s on the first
+  request; subsequent requests are seconds. The `/health` endpoint pre-warms the container if a
+  reviewer wants to avoid it.

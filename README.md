@@ -5,9 +5,20 @@ and extreme-behavior indicators, retrieving relevant precedent cases, predicting
 breakdown risk, and recommending de-escalation moves — served as a deployed,
 **measured**, containerized API.
 
-> **Status: Phase 0 (data spine) complete.** This is a portfolio project built in
-> the open, phase by phase. Each phase ends with a self-contained commit and a
-> committed evaluation. See [SPEC.md](SPEC.md) for the full architecture and build plan.
+> **Status: Phases 0–4 scaffolded (data spine + analysis + RAG + agent + serve);
+> serving benchmarks measured on Modal H100 + SGLang; deploy not yet run
+> end-to-end.** This is a portfolio project built in the open, phase by phase.
+> Each phase ends with a self-contained commit and a committed evaluation. See
+> [DESIGN.md](DESIGN.md) for the authoritative architecture, [SPEC.md](SPEC.md)
+> for the historical original plan, and [RUN.md](RUN.md) for the deploy sequence.
+>
+> **What's real today:** `results/batching_curve.csv`, `results/coldstart.csv`,
+> `results/per_request_trace.csv` — measured continuous-batching Pareto for
+> Qwen2.5-7B-Instruct on H100 (154 → 4,699 output tok/s at concurrency 1→64;
+> $0.27/1M output tokens at saturation; 98 s cold start).
+> **What's still promises:** live deploy URL, task-quality evals (sentiment F1,
+> retrieval recall@k, RAG vs no-RAG ablation), outcome-model artifact. See the
+> phase table below for the honest per-phase status.
 
 ## Credit & framing
 
@@ -74,24 +85,28 @@ this project moved from an initial CaSiNo-based ingestion to CraigslistBargain.
 | Phase | Scope | Ships | Status |
 |------:|-------|-------|:------:|
 | 0 | Data spine: schema + CraigslistBargain ingestion + RAG case corpus | normalized transcripts, case corpus, tests | ✅ done |
-| 1 | Analysis + baseline evals | `results/sentiment.csv`, `results/outcome.csv` | ⏳ |
-| 2 | RAG (pgvector) | `results/retrieval.csv` (recall@k, MRR) | ⏳ |
-| 3 | Agent + **RAG vs no-RAG ablation** | the ablation table | ⏳ |
-| 4 | Serve + deploy (FastAPI → Docker → Cloud Run) | live endpoint + curl | ⏳ |
-| 5 | Observability + cost | `results/latency_cost.csv` | ⏳ |
+| 1 | Analysis: LangChain + SGLang, XGBoost outcome model, baseline evals | `results/sentiment.csv`, `results/outcome.csv` | 🟡 code done, eval unrun |
+| 2 | RAG (Neon Postgres + pgvector HNSW, LangChain PGVector) | `results/retrieval.csv` (recall@k, MRR) | 🟡 code done, DB not provisioned |
+| 3 | Agent (LangGraph) + MCP server + **RAG vs no-RAG ablation** | the ablation table | 🟡 code done, ablation unrun |
+| 4 | Serve + deploy (FastAPI + Streamlit UI on Modal, scale-to-zero H100) | live endpoint + UI URL | 🟡 code done, `modal deploy` not run |
+| 5a | **Serving benchmarks** (H100 batching Pareto, cold-start, $/token) | `results/batching_curve.csv`, `coldstart.csv`, `per_request_trace.csv` | ✅ done |
+| 5b | Task-quality benchmarks (sentiment F1, retrieval recall@k, RAG vs no-RAG) | `results/{sentiment,retrieval,agent_eval,outcome}.csv` | ⏳ |
 | 6 | Polish + CI | full results tables, honest limitations | ⏳ |
 
 ## Repository layout
 
 ```
-data/      schema.py (normalized transcript) + ingestion scripts   ← Phase 0
-analysis/  sentiment, extreme-behavior, XGBoost outcome model       ← Phase 1
-rag/       pgvector schema, embedding, retrieval                    ← Phase 2
-agent/     LangGraph graph + tools                                  ← Phase 3
-api/       FastAPI app + Pydantic contracts                         ← Phase 4
-evals/     per-component eval harnesses + report                    ← Phase 1+
-infra/     Dockerfile, docker-compose (api + pgvector), deploy      ← Phase 4
-results/   committed eval outputs (reproducibility)
+data/         schema.py (normalized transcript) + ingestion scripts   ← Phase 0
+analysis/     sentiment, behaviors, XGBoost outcome model + service    ← Phase 1
+rag/          pgvector schema, embedding, retrieval (Neon)             ← Phase 2
+agent/        LangGraph graph + tools + LLM factory + Langfuse hook    ← Phase 3
+mcp_server/   FastMCP tool layer (same impls as agent/tools.py)        ← Phase 3
+api/          FastAPI app + Pydantic contracts                         ← Phase 4
+ui/           Streamlit UI (Modal ASGI, calls the API)                 ← Phase 4
+evals/        per-component eval harnesses + report                    ← Phase 1+
+infra/modal/  Modal deploy (SGLang + FastAPI + Streamlit)              ← Phase 4
+infra/neon/   Neon setup notes                                         ← Phase 2
+results/      committed eval outputs (reproducibility)
 ```
 
 ## Limitations (stated up front, and growing)

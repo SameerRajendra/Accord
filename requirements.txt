@@ -16,19 +16,29 @@ openai>=1.30
 langchain>=0.2
 langchain-openai>=0.1
 
-# Phase 2 — RAG
-# pgvector via LangChain's PGVector (DESIGN.md §5), not a hand-rolled client.
+# Phase 2 — RAG (Neon Postgres + pgvector via LangChain's PGVector; embeddings
+# via HuggingFaceEmbeddings loaded in-process — see DESIGN.md §4/§5)
 psycopg[binary]>=3.1
 langchain-postgres>=0.0.6
+langchain-huggingface>=0.0.3
+sentence-transformers>=2.7
 # NOTE: langchain-postgres's exact API has moved fast across versions —
-# verify on the cluster before assuming a specific method signature.
+# verify on Modal deploy before assuming a specific method signature.
 
 # Phase 3 — agent
 langgraph>=0.2
+typing-extensions>=4.7
 # MCP server exposing retrieve_precedent / predict_outcome / analyze_sentiment
 # (DESIGN.md §5). Package name/API may need adjusting once verified — the MCP
 # Python SDK's server surface has moved around across versions.
 mcp>=1.0
 
-# Phase 4 — serve                       (fastapi, uvicorn)
-# Phase 5 — observability               (langfuse, wandb)
+# Phase 4 — serve (FastAPI + uvicorn colocated with SGLang on Modal;
+# httpx for the health-check and Streamlit → API calls).
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+
+# Phase 5 — observability (Langfuse managed cloud; callback env-gated so no
+# keys = no tracing, no crash).
+langfuse>=2.0

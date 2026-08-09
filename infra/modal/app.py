@@ -165,7 +165,10 @@ app = modal.App("accord")
     secrets=[accord_secret],
     volumes={
         HF_CACHE_DIR: hf_cache,
-        "/app/results": artifacts_volume,
+        # analysis/outcome_service.py reads models/outcome_model.joblib by
+        # default; keep the Volume mount aligned so the same code works
+        # locally and on Modal.
+        "/app/models": artifacts_volume,
     },
     max_containers=1,
     scaledown_window=300,
@@ -269,11 +272,16 @@ def build_corpus() -> int:
 
 @app.function(
     image=corpus_image,
-    volumes={"/app/results": artifacts_volume},
+    volumes={"/app/models": artifacts_volume},
     timeout=1800,
 )
 def train_outcome() -> str:
-    """Train + calibrate + save the outcome model to the artifacts Volume."""
+    """Train + calibrate + save the outcome model to the artifacts Volume.
+
+    Writes to `/app/models/outcome_model.joblib` — the path
+    `analysis/outcome_service.py` reads by default, so the GPU container
+    (which mounts the same Volume at `/app/models`) picks it up on next request.
+    """
     import json
 
     from analysis.outcome_model import (
@@ -307,7 +315,7 @@ def train_outcome() -> str:
     model = train_outcome_model(X_train, y_train)
     calibrator = calibrate(model, X_val, y_val)
 
-    out = Path("/app/results/outcome_model.pkl")
+    out = Path("/app/models/outcome_model.joblib")
     save_model(model, calibrator, list(X_train.columns), out)
     artifacts_volume.commit()
 
