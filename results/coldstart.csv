@@ -1,0 +1,2 @@
+gpu,model,cold_start_s,first_warm_request_p50_s,cold_start_usd,note
+H100,Qwen/Qwen2.5-7B-Instruct,98.3,0.788,0.1245,cold = container enter -> /v1/models 200; excludes image pull

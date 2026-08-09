@@ -1,0 +1,8 @@
+concurrency,requests,wall_s,ttft_p50_ms,ttft_p95_ms,e2e_p50_ms,e2e_p95_ms,e2e_mean_ms,output_tok_s,requests_s,total_output_tokens,gpu,model,in_tokens,out_tokens_requested,ignore_eos,usd_per_1k_requests,usd_per_1m_output_tokens
+1,128,100.85,25.5,26.1,788.1,789.0,787.8,153.5,1.269,15480,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.998,8.25
+2,128,52.162,33.9,35.8,814.8,816.6,814.9,296.9,2.454,15489,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.5162,4.27
+4,128,26.201,31.4,33.0,818.4,819.7,818.4,590.9,4.885,15483,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.2593,2.14
+8,128,14.097,40.2,497.8,854.0,865.7,858.8,1095.6,9.08,15445,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.1395,1.16
+16,128,7.267,54.4,82.0,906.7,930.1,906.3,2125.4,17.613,15446,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.0719,0.6
+32,256,9.528,100.4,532.4,1394.8,1411.7,1187.9,3261.9,26.867,31080,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.0471,0.39
+64,512,13.212,224.7,1059.4,2068.4,2098.8,1646.0,4698.6,38.751,62080,H100,Qwen/Qwen2.5-7B-Instruct,512,128,True,0.0327,0.27
