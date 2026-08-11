@@ -23,9 +23,12 @@ from agent.graph import run as run_graph
 from api.models import (
     AnalyzeRequest,
     AnalyzeResponse,
+    AnalyzeThreadRequest,
     HealthResponse,
+    ParsedTurnPayload,
     RecommendationPayload,
 )
+from data.schema import Transcript
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +58,9 @@ def build_app() -> FastAPI:
     app = FastAPI(
         title="Accord — Negotiation Intelligence API",
         version="0.1.0",
-        description="Analyze negotiation transcripts: sentiment, extreme-behavior flags, "
-        "breakdown risk, precedent retrieval, and a de-escalation recommendation.",
+        description="Analyze negotiation transcripts: sentiment, per-party stance, where the "
+        "discussion is heading, extreme-behavior flags, breakdown risk, precedent retrieval, "
+        "and a de-escalation recommendation.",
     )
 
     @app.get("/health", response_model=HealthResponse)
@@ -68,14 +72,15 @@ def build_app() -> FastAPI:
             rag_configured=bool(os.environ.get("DATABASE_URL")),
         )
 
-    @app.post("/analyze", response_model=AnalyzeResponse)
-    def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
+    def _run(
+        transcript: Transcript,
+        use_rag: bool,
+        retrieval_query: Optional[str],
+        parsed: Optional[list] = None,
+    ) -> AnalyzeResponse:
+        """Shared analysis path for both entry points."""
         try:
-            final = run_graph(
-                req.transcript,
-                use_rag=req.use_rag,
-                retrieval_query=req.retrieval_query,
-            )
+            final = run_graph(transcript, use_rag=use_rag, retrieval_query=retrieval_query)
         except Exception as exc:  # noqa: BLE001
             logger.exception("graph invocation failed")
             raise HTTPException(status_code=500, detail=f"analysis failed: {exc}") from exc
@@ -89,11 +94,44 @@ def build_app() -> FastAPI:
         )
         return AnalyzeResponse(
             sentiment=final.get("sentiment", []),
+            party_stances=final.get("party_stances", []),
+            # None (not a synthesized "unknown") when the node never ran — the
+            # stance stage builds its own explicit unknown when it merely failed.
+            trajectory=final.get("trajectory"),
             behaviors=final.get("behaviors", []),
             outcome_prob=final.get("outcome_prob"),
             retrieved=final.get("retrieved", []),
             recommendation=rec_payload,
+            parsed=parsed or [],
         )
+
+    @app.post("/analyze", response_model=AnalyzeResponse)
+    def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
+        """Typed entry point — caller supplies an already-normalized Transcript."""
+        return _run(req.transcript, req.use_rag, req.retrieval_query)
+
+    @app.post("/analyze/thread", response_model=AnalyzeResponse)
+    def analyze_thread(req: AnalyzeThreadRequest) -> AnalyzeResponse:
+        """Raw-text entry point — paste an email thread, the LLM structures it.
+
+        Parse failures return 422 (the caller's input is unusable) rather than
+        500, so a malformed paste is distinguishable from a broken pipeline.
+        """
+        from analysis.parse_thread import ThreadParseError, parse_thread
+
+        try:
+            transcript = parse_thread(req.thread_text)
+        except ThreadParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("unexpected thread-parsing failure")
+            raise HTTPException(status_code=500, detail=f"thread parsing failed: {exc}") from exc
+
+        parsed = [
+            ParsedTurnPayload(index=t.index, speaker=t.speaker, text=t.text)
+            for t in transcript.turns
+        ]
+        return _run(transcript, req.use_rag, req.retrieval_query, parsed=parsed)
 
     return app
 

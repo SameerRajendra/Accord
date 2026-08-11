@@ -1,24 +1,25 @@
 """Outcome model evaluation: F1, ROC-AUC, and a calibration curve.
 
 Trains the XGBoost breakdown-risk model on the `train` split, calibrates on
-`validation`, and reports metrics on the held-out `test` split — the split
-CraigslistBargain already carries per-dialogue (see `Transcript.metadata["split"]`,
-set by `data/ingest_craigslist.py`). Test is touched exactly once, at the end.
+`validation`, and reports metrics on the held-out `test` split — the
+deterministic split `data/ingest_casino.py` writes into
+`Transcript.metadata["split"]`. Test is touched exactly once, at the end.
 
 Ships two committed artifacts:
-- `results/outcome.csv` — one summary row (n, F1, accuracy, ROC-AUC).
+- `results/outcome.csv` — one summary row (n, F1, accuracy, ROC-AUC, and the
+  base rate, so a high accuracy on this cooperative task stays honest).
 - `results/outcome_calibration.csv` — the reliability-diagram bins (mean
   predicted probability vs. actual positive fraction per bin), so the
   calibration claim is independently checkable, not just asserted.
 
 The trained model itself is saved to `models/outcome_model.joblib` —
-gitignored (a regeneratable binary, not an eval output) but is what Phase 4's
-API would load for real-time inference.
+gitignored (a regeneratable binary, not an eval output) but is what the API
+loads for real-time inference (`analysis/outcome_service.py`).
 
 Usage::
 
     python -m evals.outcome_eval
-    python -m evals.outcome_eval --input data/processed/craigslist_bargain.jsonl
+    python -m evals.outcome_eval --input data/processed/casino.jsonl
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import sys
 from pathlib import Path
 
 from sklearn.calibration import calibration_curve
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
 
 from analysis.outcome_model import (
     build_feature_matrix,
@@ -41,7 +42,7 @@ from analysis.outcome_model import (
 )
 from data.schema import Transcript
 
-DEFAULT_INPUT = Path("data/processed/craigslist_bargain.jsonl")
+DEFAULT_INPUT = Path("data/processed/casino.jsonl")
 DEFAULT_RESULTS_DIR = Path("results")
 DEFAULT_MODEL_PATH = Path("models/outcome_model.joblib")
 
@@ -64,7 +65,7 @@ def run_eval(input_path: Path, results_dir: Path, model_path: Path) -> dict:
     if not input_path.exists():
         raise FileNotFoundError(
             f"{input_path} not found. Run ingestion first:\n"
-            f"  python -m data.ingest_craigslist --download"
+            f"  python -m data.ingest_casino --download"
         )
 
     transcripts = _load_transcripts(input_path)
@@ -90,7 +91,29 @@ def run_eval(input_path: Path, results_dir: Path, model_path: Path) -> dict:
 
     f1 = f1_score(y_test, test_pred)
     accuracy = accuracy_score(y_test, test_pred)
-    roc_auc = roc_auc_score(y_test, test_proba)
+    # ROC-AUC is undefined if the test split is single-class; report NaN rather
+    # than crash (possible on a small/imbalanced cooperative-task split).
+    try:
+        roc_auc = roc_auc_score(y_test, test_proba)
+    except ValueError:
+        roc_auc = float("nan")
+    # Base rate = the majority-class accuracy a trivial "always predict the
+    # common outcome" model would get. On a cooperative task most dialogues
+    # reach agreement, so committing this alongside accuracy keeps a high
+    # number honest.
+    positive_rate = float(y_test.mean())
+    base_rate = max(positive_rate, 1.0 - positive_rate)
+
+    # CaSiNo is a cooperative task (~97.6% agreement), so accuracy and F1 are
+    # both dominated by the majority class. These three numbers are the ones
+    # that actually say whether the model learned anything:
+    #   - accuracy_lift: how much it beats "always predict the common outcome".
+    #   - breakdown_recall: of the negotiations that actually broke down, how
+    #     many did it catch? (recall on the minority class, label 0)
+    #   - the raw confusion counts, so a reader can recompute anything else.
+    tn, fp, fn, tp = confusion_matrix(y_test, test_pred, labels=[0, 1]).ravel()
+    breakdown_recall = float(tn / (tn + fp)) if (tn + fp) else float("nan")
+    accuracy_lift = float(accuracy - base_rate)
     prob_true, prob_pred = calibration_curve(y_test, test_proba, n_bins=N_CALIBRATION_BINS, strategy="uniform")
 
     save_model(model, calibrator, list(X_train.columns), model_path)
@@ -99,8 +122,22 @@ def run_eval(input_path: Path, results_dir: Path, model_path: Path) -> dict:
     summary_path = results_dir / "outcome.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["n_train", "n_validation", "n_test", "f1", "accuracy", "roc_auc"])
-        writer.writerow([len(train), len(validation), len(test), f1, accuracy, roc_auc])
+        writer.writerow(
+            [
+                "n_train", "n_validation", "n_test",
+                "f1", "accuracy", "roc_auc",
+                "positive_rate", "base_rate", "accuracy_lift", "breakdown_recall",
+                "tn", "fp", "fn", "tp",
+            ]
+        )
+        writer.writerow(
+            [
+                len(train), len(validation), len(test),
+                f1, accuracy, roc_auc,
+                positive_rate, base_rate, accuracy_lift, breakdown_recall,
+                tn, fp, fn, tp,
+            ]
+        )
 
     calibration_path = results_dir / "outcome_calibration.csv"
     with calibration_path.open("w", newline="", encoding="utf-8") as fh:
@@ -116,6 +153,11 @@ def run_eval(input_path: Path, results_dir: Path, model_path: Path) -> dict:
         "f1": f1,
         "accuracy": accuracy,
         "roc_auc": roc_auc,
+        "positive_rate": positive_rate,
+        "base_rate": base_rate,
+        "accuracy_lift": accuracy_lift,
+        "breakdown_recall": breakdown_recall,
+        "confusion": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
         "summary_csv": str(summary_path),
         "calibration_csv": str(calibration_path),
         "model_path": str(model_path),

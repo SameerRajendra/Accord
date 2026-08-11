@@ -1,38 +1,51 @@
-"""XGBoost breakdown-risk predictor for CraigslistBargain negotiations.
+"""XGBoost breakdown-risk predictor for CaSiNo campsite negotiations.
 
-Predicts `Outcome.agreement_reached` (did the negotiation close a deal?) from
+Predicts `Outcome.agreement_reached` (did the two campers close a deal?) from
 features available during or before the negotiation — never from the
 resolution itself. This is the one non-LLM analysis component, deliberately:
 cheap, fast (~ms inference), and it gives a genuinely calibrated probability
 that can be benchmarked against an LLM zero-shot baseline (see
 `evals/outcome_eval.py`).
 
-Feature design — no leakage
-----------------------------
-Features come from two places only:
+Feature design — no leakage, order-invariant
+--------------------------------------------
+CaSiNo's two negotiators are labeled `agent_1`/`agent_2` **arbitrarily** (which
+MTurk worker is "1" carries no meaning), so every feature here is symmetric
+across the two parties — min/mean aggregations and conflict flags, never a raw
+`agent_1_x` column that would let the model learn a labeling artifact.
 
-1. **Setup** (known before any turn is spoken): buyer/seller `Target` price,
-   the public listed price, item category.
-2. **Process** (the shape of the dialogue, not its resolution): message-turn
-   count, offer count, who spoke first, counts of *meaningful* dialogue-act
-   intents (disagree/agree/inquiry/inform/vague-price/init-price/
-   counter-price/intro — see `MEANINGFUL_INTENTS` in `build_case_corpus.py`).
+Features come from three leakage-free places:
 
-Explicitly excluded: `Outcome.final_deal`, and any count of the resolution
-actions themselves (accept/reject/quit). Counting "was there an accept turn"
-would just be re-encoding the label — degenerate, not predictive. `num_offers`
-is fine to keep, since an offer can still be rejected (verified in the
-ingestion tests) — it doesn't trivially determine the outcome.
+1. **Preferences** (known before any turn): the priority rankings — in
+   particular whether both parties rank the *same* issue High (a structural
+   conflict that should predict harder negotiations).
+2. **Personality** (pre-negotiation survey): SVO (proself/prosocial) and the
+   Big-Five traits most plausibly tied to reaching agreement (agreeableness,
+   emotional-stability, openness), aggregated order-invariantly.
+3. **Process** (the shape of the dialogue, not its resolution): message-turn
+   count and offer (Submit-Deal) count.
+
+Explicitly excluded: `Outcome.final_deal`, `Outcome.points`,
+`Party.satisfaction`/`opponent_likeness` (all outcomes), and any count of the
+resolution actions themselves (accept/reject/quit) — counting "was there an
+accept" would just re-encode the label. **Strategy annotations are also
+excluded**: only ~38% of dialogues carry them, so their presence is a dataset
+*selection* artifact, not a property of the negotiation — including them would
+leak the annotated-subset boundary. Strategies stay on the RAG/analysis side.
 
 Calibration
 -----------
 Hand-rolled isotonic regression on held-out validation predictions, not
 sklearn's `CalibratedClassifierCV(cv="prefit")`. That parameter path has
 churned across sklearn versions (`base_estimator` -> `estimator`, and
-`cv="prefit"` deprecated in 1.6 for `FrozenEstimator`) — since the exact
-sklearn version on the target cluster isn't known ahead of time,
-`IsotonicRegression.fit`/`.predict` is a simpler, version-stable surface that
-does the same thing this project needs, transparently.
+`cv="prefit"` deprecated in 1.6 for `FrozenEstimator`) — `IsotonicRegression`
+is a simpler, version-stable surface that does the same thing here.
+
+Class-balance caveat
+--------------------
+CaSiNo is a cooperative task, so most dialogues reach agreement — the positive
+class dominates. `evals/outcome_eval.py` reports the base rate alongside F1/AUC
+so a high accuracy that just tracks the majority class is visible, not hidden.
 """
 
 from __future__ import annotations
@@ -45,10 +58,10 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.isotonic import IsotonicRegression
 
-from data.build_case_corpus import MEANINGFUL_INTENTS
 from data.schema import Action, Transcript
 
-CATEGORY_VALUES = ["housing", "furniture", "electronics", "bike", "car", "phone"]
+# Big-Five traits used as features (order-invariant aggregates below).
+_BIG_FIVE_KEYS = ("agreeableness", "emotional-stability", "openness-to-experiences")
 
 DEFAULT_XGB_PARAMS = {
     "n_estimators": 200,
@@ -60,58 +73,63 @@ DEFAULT_XGB_PARAMS = {
 }
 
 
-def _party_meta(transcript: Transcript, role: str, key: str):
-    party = next((p for p in transcript.parties if p.party_id == role), None)
-    return party.metadata.get(key) if party else None
+def _high_issue(party) -> str:
+    """The issue this party ranks 'High' (priorities is issue->priority)."""
+    for issue, level in (party.priorities or {}).items():
+        if level == "High":
+            return issue
+    return ""
+
+
+def _svo(party) -> str:
+    return ((party.metadata or {}).get("personality") or {}).get("svo", "")
+
+
+def _big_five(party, trait: str):
+    bf = ((party.metadata or {}).get("personality") or {}).get("big-five") or {}
+    val = bf.get(trait)
+    return float(val) if val is not None else float("nan")
+
+
+def _agg(values: list, fn) -> float:
+    vals = [v for v in values if v == v]  # drop NaN
+    return float(fn(vals)) if vals else float("nan")
 
 
 def extract_features(transcript: Transcript) -> dict:
-    """Engineer one feature row (pure — no ML deps, unit-testable alone)."""
-    buyer_target = _party_meta(transcript, "buyer", "target")
-    seller_target = _party_meta(transcript, "seller", "target")
-    listed_price = _party_meta(transcript, "buyer", "item_listed_price")
-    if listed_price is None:
-        listed_price = _party_meta(transcript, "seller", "item_listed_price")
+    """Engineer one feature row (pure — no ML deps, unit-testable alone).
 
+    Symmetric across parties: which negotiator is `agent_1` is arbitrary."""
+    parties = transcript.parties
     message_turns = [t for t in transcript.turns if t.action is None]
     offer_turns = [t for t in transcript.turns if t.action is Action.SUBMIT_DEAL]
 
-    intent_counts = dict.fromkeys(MEANINGFUL_INTENTS, 0)
-    for turn in message_turns:
-        intent = turn.metadata.get("intent")
-        if intent in intent_counts:
-            intent_counts[intent] += 1
+    high_issues = [_high_issue(p) for p in parties if _high_issue(p)]
+    high_conflict = 1.0 if len(high_issues) == 2 and high_issues[0] == high_issues[1] else 0.0
+
+    svos = [_svo(p) for p in parties]
+    num_proself = float(sum(1 for s in svos if s == "proself"))
 
     features = {
-        "buyer_target": float(buyer_target) if buyer_target is not None else float("nan"),
-        "seller_target": float(seller_target) if seller_target is not None else float("nan"),
-        "listed_price": float(listed_price) if listed_price is not None else float("nan"),
-        "target_gap": (
-            float(seller_target - buyer_target)
-            if buyer_target is not None and seller_target is not None
-            else float("nan")
-        ),
         "num_message_turns": float(len(message_turns)),
         "num_offers": float(len(offer_turns)),
-        "first_mover_is_buyer": (
-            1.0 if transcript.turns and transcript.turns[0].speaker == "buyer" else 0.0
-        ),
-        "category": transcript.metadata.get("category") or "unknown",
+        "high_conflict": high_conflict,
+        "num_proself": num_proself,
+        "both_proself": 1.0 if num_proself == 2 else 0.0,
     }
-    for name, count in intent_counts.items():
-        features[f"intent_{name.replace('-', '_')}"] = float(count)
+    for trait in _BIG_FIVE_KEYS:
+        vals = [_big_five(p, trait) for p in parties]
+        key = trait.replace("-", "_")
+        features[f"mean_{key}"] = _agg(vals, np.mean)
+        features[f"min_{key}"] = _agg(vals, np.min)
     return features
 
 
-def build_feature_matrix(transcripts: list[Transcript]) -> tuple[pd.DataFrame, pd.Series]:
-    """Rows -> (X, y). Category is one-hot encoded against a FIXED column set
-    so train/validation/test always share the same schema, even if a
-    category happens to be absent from one split."""
+def build_feature_matrix(transcripts: list) -> tuple:
+    """Rows -> (X, y). All features are numeric and share a fixed schema across
+    splits (no categorical one-hots — CaSiNo's domain is fixed)."""
     rows = [extract_features(t) for t in transcripts]
     df = pd.DataFrame(rows)
-    for cat in CATEGORY_VALUES:
-        df[f"category_{cat}"] = (df["category"] == cat).astype(float)
-    df = df.drop(columns=["category"])
     y = pd.Series([int(t.outcome.agreement_reached) for t in transcripts], name="agreement_reached")
     return df, y
 

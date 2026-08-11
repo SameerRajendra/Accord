@@ -1,9 +1,9 @@
 """LangGraph agent: analyze → retrieve → recommend.
 
-Four analysis nodes (sentiment, behaviors, outcome, retrieve) fan out from
-START in parallel — each writes a distinct key into `AgentState`, so
+Five analysis nodes (sentiment, behaviors, stance, outcome, retrieve) fan out
+from START in parallel — each writes distinct keys into `AgentState`, so
 LangGraph runs them concurrently without state collisions. `recommend`
-barriers on all four before generating the final recommendation.
+barriers on all five before generating the final recommendation.
 
 The `use_rag` flag on `AgentState` gates the retrieve node — set `False` to
 run the RAG-vs-no-RAG ablation (DESIGN.md §7 signature experiment) without
@@ -28,6 +28,8 @@ from agent.tools import (
 )
 from analysis.behaviors import BehaviorFlag
 from analysis.sentiment import PerTurnSentiment
+from analysis.stance import Direction, PartyStance, Trajectory
+from analysis.stance import analyze as analyze_stance
 from data.schema import Transcript
 from rag.retriever import RetrievedCase
 
@@ -55,6 +57,8 @@ class AgentState(TypedDict, total=False):
     retrieval_query: Optional[str]
     sentiment: List[PerTurnSentiment]
     behaviors: List[BehaviorFlag]
+    party_stances: List[PartyStance]
+    trajectory: Optional[Trajectory]
     outcome_prob: Optional[float]
     retrieved: List[RetrievedCase]
     recommendation: Recommendation
@@ -69,6 +73,15 @@ def _node_sentiment(state: AgentState) -> AgentState:
 
 def _node_behaviors(state: AgentState) -> AgentState:
     return {"behaviors": detect_behaviors_tool(state["transcript"])}
+
+
+def _node_stance(state: AgentState) -> AgentState:
+    # Called directly rather than through `agent/tools.py`: that module exists to
+    # keep the MCP and agent surfaces over one implementation, and stance isn't
+    # exposed over MCP, so a wrapper would have nothing on the other side.
+    # One call returns both keys — see analysis/stance.py for why they share it.
+    report = analyze_stance(state["transcript"])
+    return {"party_stances": report.parties, "trajectory": report.trajectory}
 
 
 def _node_outcome(state: AgentState) -> AgentState:
@@ -91,12 +104,13 @@ def _node_retrieve(state: AgentState) -> AgentState:
 
 _RECOMMEND_SYSTEM = (
     "You are a negotiation coach. Given the analysis of a transcript and (optionally) "
-    "relevant precedent cases, recommend one concrete next move for the negotiator "
-    "on the buyer side. Use a named tactic from {mirror, label, calibrated-question, "
-    "accusation-audit, value-swap, walk-away, other}. When precedent cases are "
-    "provided, cite the case_ids you actually used in `grounded_case_ids`; leave it "
-    "empty otherwise. Rationale must reference specific signals from the analysis, "
-    "not restate the transcript."
+    "relevant precedent cases, recommend one concrete next move for the first party "
+    "(the one who should act next to steer toward a better, non-broken outcome). Use a "
+    "named tactic from {mirror, label, calibrated-question, accusation-audit, "
+    "value-swap, walk-away, other}. When precedent cases are provided, cite the "
+    "case_ids you actually used in `grounded_case_ids`; leave it empty otherwise. "
+    "Rationale must reference specific signals from the analysis, not restate the "
+    "transcript."
 )
 
 
@@ -109,6 +123,31 @@ def _format_analysis(state: AgentState) -> str:
             parts.append(
                 f"  turn {s.turn_index}: {s.emotion.value} (escalation={s.escalation:.2f}) — {s.rationale}"
             )
+
+    stances = state.get("party_stances") or []
+    if stances:
+        parts.append("PARTY STANCE (whole thread, per participant):")
+        for ps in stances:
+            turns = ", ".join(str(i) for i in ps.evidence_turns) or "none cited"
+            parts.append(
+                f"  - {ps.party}: mood={ps.mood.value}, flexibility={ps.flexibility.value}; "
+                f"holding: {ps.position or 'unstated'} (turns {turns}) — {ps.rationale}"
+            )
+
+    trajectory = state.get("trajectory")
+    if trajectory is not None and trajectory.direction != Direction.UNKNOWN:
+        turned = (
+            f", tone turned at turn {trajectory.turning_point_turn}"
+            if trajectory.turning_point_turn is not None
+            else ""
+        )
+        parts.append(
+            f"TRAJECTORY: {trajectory.direction.value} "
+            f"(confidence={trajectory.confidence:.2f}{turned}) — {trajectory.reasoning}"
+        )
+    else:
+        # Say so rather than omit it — a missing section reads as "calm" to the model.
+        parts.append("TRAJECTORY: (not available — the stance stage returned no reading)")
 
     behaviors = state.get("behaviors") or []
     present = [b for b in behaviors if b.present]
@@ -140,7 +179,7 @@ def _node_recommend(state: AgentState) -> AgentState:
     analysis = _format_analysis(state)
     prompt = [
         ("system", _RECOMMEND_SYSTEM),
-        ("user", analysis + "\n\nWhat is the buyer's next move?"),
+        ("user", analysis + "\n\nWhat is the recommended next move?"),
     ]
     try:
         rec: Recommendation = model.invoke(prompt, config={"callbacks": langfuse_callbacks()})
@@ -165,13 +204,14 @@ def build_graph():
     g: StateGraph = StateGraph(AgentState)
     g.add_node("sentiment", _node_sentiment)
     g.add_node("behaviors", _node_behaviors)
+    g.add_node("stance", _node_stance)
     g.add_node("outcome", _node_outcome)
     g.add_node("retrieve", _node_retrieve)
     g.add_node("recommend", _node_recommend)
 
-    # Fan out from START to all four analysis nodes (LangGraph runs them
-    # concurrently; each writes a distinct state key).
-    for node in ("sentiment", "behaviors", "outcome", "retrieve"):
+    # Fan out from START to all five analysis nodes (LangGraph runs them
+    # concurrently; each writes state keys no other node writes).
+    for node in ("sentiment", "behaviors", "stance", "outcome", "retrieve"):
         g.add_edge(START, node)
         g.add_edge(node, "recommend")
 

@@ -25,6 +25,18 @@ sentence-transformers>=2.7
 # NOTE: langchain-postgres's exact API has moved fast across versions —
 # verify on Modal deploy before assuming a specific method signature.
 
+# Phase 2b — knowledge-graph retrieval (rag/graph_*.py).
+#
+# Deliberately ZERO new dependencies. The graph is a pair of relational tables
+# (accord_graph_nodes / accord_graph_edges) in the SAME Neon database as the
+# vector store, traversed with recursive CTEs through the `psycopg` driver
+# already pinned above, and reached through the SAME `DATABASE_URL` secret.
+#
+# The alternative considered was Neo4j Aura Free, which would have added the
+# `neo4j` driver here AND to infra/modal/app.py's `_common_pip`, plus a second
+# managed service and a second secret. See infra/graph/README.md for the full
+# decision record and the cost of this choice.
+
 # Phase 3 — agent
 langgraph>=0.2
 typing-extensions>=4.7

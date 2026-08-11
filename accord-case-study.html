@@ -1,0 +1,738 @@
+<title>Accord — Engineering Case Study</title>
+<style>
+  /* ---------------------------------------------------------------
+     Palette: instrumentation. Deep teal accent (oscilloscope/telemetry),
+     neutrals carry a faint cyan bias so they read chosen, not defaulted.
+     Semantic colours are separate from the accent and only ever encode
+     verification status — which is this page's whole thesis.
+     --------------------------------------------------------------- */
+  :root {
+    --paper:      #F3F6F6;
+    --surface:    #FFFFFF;
+    --surface-2:  #E9EFEF;
+    --rule:       #D2DDDD;
+    --ink:        #0F1618;
+    --ink-2:      #33474C;
+    --muted:      #5F757B;
+    --accent:     #0A6F80;
+    --accent-2:   #0E8FA3;
+    --ok:         #2C6E49;
+    --warn:       #8A6212;
+    --crit:       #99321F;
+    --ok-bg:      #E3EFE7;
+    --warn-bg:    #F6EEDC;
+    --crit-bg:    #F5E4E0;
+
+    --font-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --font-body: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    --measure: 68ch;
+    --gutter: clamp(1.25rem, 4vw, 3rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:     #0B1113;
+      --surface:   #121A1D;
+      --surface-2: #182327;
+      --rule:      #26363B;
+      --ink:       #E4EDEF;
+      --ink-2:     #B3C6CA;
+      --muted:     #7D949A;
+      --accent:    #23A8BD;
+      --accent-2:  #3FC4D8;
+      --ok:        #6BBF8E;
+      --warn:      #D9AB53;
+      --crit:      #E08874;
+      --ok-bg:     #16291F;
+      --warn-bg:   #2B2416;
+      --crit-bg:   #2E1D18;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:     #0B1113;
+    --surface:   #121A1D;
+    --surface-2: #182327;
+    --rule:      #26363B;
+    --ink:       #E4EDEF;
+    --ink-2:     #B3C6CA;
+    --muted:     #7D949A;
+    --accent:    #23A8BD;
+    --accent-2:  #3FC4D8;
+    --ok:        #6BBF8E;
+    --warn:      #D9AB53;
+    --crit:      #E08874;
+    --ok-bg:     #16291F;
+    --warn-bg:   #2B2416;
+    --crit-bg:   #2E1D18;
+  }
+  :root[data-theme="light"] {
+    --paper:      #F3F6F6;
+    --surface:    #FFFFFF;
+    --surface-2:  #E9EFEF;
+    --rule:       #D2DDDD;
+    --ink:        #0F1618;
+    --ink-2:      #33474C;
+    --muted:      #5F757B;
+    --accent:     #0A6F80;
+    --accent-2:   #0E8FA3;
+    --ok:         #2C6E49;
+    --warn:       #8A6212;
+    --crit:       #99321F;
+    --ok-bg:      #E3EFE7;
+    --warn-bg:    #F6EEDC;
+    --crit-bg:    #F5E4E0;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: var(--gutter);
+    display: flex;
+    flex-direction: column;
+    gap: clamp(2.5rem, 6vw, 4.5rem);
+  }
+
+  .measure { max-width: var(--measure); }
+
+  h1, h2, h3, .eyebrow, .chip, th, .stat-n, .num {
+    font-family: var(--font-display);
+  }
+
+  h1 {
+    font-size: clamp(2.1rem, 6vw, 3.4rem);
+    line-height: 1.04;
+    letter-spacing: -0.03em;
+    font-weight: 800;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: clamp(1.35rem, 3vw, 1.75rem);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    font-weight: 750;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.02rem;
+    letter-spacing: -0.01em;
+    font-weight: 700;
+    margin: 0;
+    text-wrap: balance;
+  }
+  p { margin: 0; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .eyebrow {
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--muted);
+  }
+
+  /* --- header ------------------------------------------------------ */
+  header { display: flex; flex-direction: column; gap: 1.25rem; padding-top: 1rem; }
+  .lede {
+    font-size: clamp(1.05rem, 2.2vw, 1.28rem);
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 60ch;
+  }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    color: var(--muted);
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+  }
+
+  /* --- status chips: the structural device ------------------------- */
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.4em;
+    font-size: 0.63rem; font-weight: 750;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 0.28em 0.6em;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .chip::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+  }
+  .chip.measured   { color: var(--ok);   background: var(--ok-bg); }
+  .chip.unverified { color: var(--warn); background: var(--warn-bg); }
+  .chip.notbuilt   { color: var(--crit); background: var(--crit-bg); }
+
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+  .sec-head { display: flex; flex-direction: column; gap: 0.55rem; }
+  .sec-head .row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .prose { display: flex; flex-direction: column; gap: 1rem; max-width: var(--measure); }
+
+  /* --- stat band --------------------------------------------------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .stat { background: var(--surface); padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.3rem; }
+  .stat-n {
+    font-size: clamp(1.5rem, 3.4vw, 2rem);
+    font-weight: 800; letter-spacing: -0.035em; line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+  }
+  .stat-l { font-family: var(--font-display); font-size: 0.74rem; color: var(--muted); line-height: 1.35; }
+
+  /* --- tables ------------------------------------------------------ */
+  .scroller { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th {
+    font-size: 0.66rem; letter-spacing: 0.09em; text-transform: uppercase;
+    font-weight: 700; color: var(--muted); background: var(--surface-2);
+  }
+  td { font-family: var(--font-mono); font-size: 0.8rem; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  td:first-child { color: var(--ink); }
+  tr:last-child td { border-bottom: none; }
+  tr.hi td { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--ink); font-weight: 600; }
+  td.wrap-ok, th.wrap-ok { white-space: normal; font-family: var(--font-body); font-size: 0.86rem; }
+
+  /* --- chart ------------------------------------------------------- */
+  .panel {
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--surface);
+    padding: 1.25rem;
+    display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  .chart-wrap { overflow-x: auto; }
+  svg.chart { display: block; min-width: 560px; width: 100%; height: auto; }
+  .legend { display: flex; gap: 1.25rem; flex-wrap: wrap; font-family: var(--font-display); font-size: 0.74rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .swatch { width: 14px; height: 3px; border-radius: 2px; }
+
+  /* --- architecture flow ------------------------------------------- */
+  .flow { display: flex; flex-direction: column; gap: 0.5rem; }
+  .tier {
+    border: 1px solid var(--rule); border-radius: 4px; background: var(--surface);
+    padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .tier-l { font-family: var(--font-display); font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .nodes { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .node {
+    font-family: var(--font-mono); font-size: 0.74rem;
+    border: 1px solid var(--rule); border-radius: 3px;
+    padding: 0.35rem 0.6rem; background: var(--surface-2); color: var(--ink-2);
+  }
+  .node.par { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  .arrow { text-align: center; color: var(--muted); font-family: var(--font-mono); font-size: 0.8rem; line-height: 1; }
+
+  /* --- failure log ------------------------------------------------- */
+  .fails { display: flex; flex-direction: column; gap: 0.6rem; }
+  details.fail {
+    border: 1px solid var(--rule); border-radius: 4px; background: var(--surface);
+    overflow: hidden;
+  }
+  details.fail > summary {
+    cursor: pointer; padding: 0.85rem 1rem;
+    display: flex; gap: 0.75rem; align-items: baseline;
+    font-family: var(--font-display); font-weight: 650; font-size: 0.94rem;
+    list-style: none;
+  }
+  details.fail > summary::-webkit-details-marker { display: none; }
+  details.fail > summary::after {
+    content: "+"; margin-left: auto; color: var(--muted);
+    font-family: var(--font-mono); font-weight: 400; flex: none;
+  }
+  details.fail[open] > summary::after { content: "\2212"; }
+  details.fail > summary:hover { background: var(--surface-2); }
+  .fail-body { padding: 0 1rem 1rem; display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.94rem; color: var(--ink-2); }
+  .fail-body strong { color: var(--ink); }
+  .tag {
+    font-family: var(--font-mono); font-size: 0.68rem; color: var(--muted);
+    border: 1px solid var(--rule); border-radius: 3px; padding: 0.1em 0.4em; flex: none;
+  }
+
+  pre {
+    margin: 0; overflow-x: auto; background: var(--surface-2);
+    border: 1px solid var(--rule); border-radius: 4px;
+    padding: 0.8rem 1rem; font-family: var(--font-mono); font-size: 0.76rem;
+    line-height: 1.55; color: var(--ink-2);
+  }
+  code { font-family: var(--font-mono); font-size: 0.88em; }
+  .prose code, .fail-body code, li code { background: var(--surface-2); padding: 0.1em 0.35em; border-radius: 3px; }
+
+  ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  li { padding-left: 0.15rem; }
+
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+  .card { border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .card p { font-size: 0.9rem; color: var(--ink-2); }
+
+  footer {
+    border-top: 1px solid var(--rule); padding: 1.5rem 0 3rem;
+    font-family: var(--font-mono); font-size: 0.74rem; color: var(--muted);
+    display: flex; flex-direction: column; gap: 0.4rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <span class="eyebrow">Engineering case study</span>
+    <h1>Accord: a negotiation-intelligence pipeline, measured rather than claimed</h1>
+    <p class="lede">
+      A self-hosted LLM system that reads a negotiation transcript and returns per-turn escalation,
+      extreme-behaviour flags, retrieved precedent, and a grounded recommendation. Served on a
+      rented H100 that scales to zero. This page reports what was measured, what wasn't, and the
+      three things that went wrong badly enough to be worth writing down.
+    </p>
+    <div class="meta">
+      <span>Qwen2.5-7B-Instruct · SGLang · Modal H100</span>
+      <span>LangGraph · FastMCP · pgvector on Neon</span>
+      <span>Corpus: CaSiNo, 1,030 dialogues</span>
+    </div>
+  </header>
+
+  <!-- ============================================================= -->
+  <section>
+    <div class="sec-head">
+      <div class="row">
+        <h2>The serving numbers</h2>
+        <span class="chip measured">Measured</span>
+      </div>
+      <p class="measure" style="color:var(--muted); font-size:0.92rem;">
+        512-token input, 128-token output, <code>ignore_eos</code>, single H100. Every figure below
+        is reproducible from three committed CSVs, including a per-request trace of all 1,408
+        requests so a reader can recompute the percentiles instead of trusting them.
+      </p>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-n">30&times;</span>
+        <span class="stat-l">throughput gain, concurrency 1&nbsp;&rarr;&nbsp;64</span>
+      </div>
+      <div class="stat">
+        <span class="stat-n">2.6&times;</span>
+        <span class="stat-l">p50 latency cost for that gain</span>
+      </div>
+      <div class="stat">
+        <span class="stat-n">$0.27</span>
+        <span class="stat-l">per 1M output tokens at saturation</span>
+      </div>
+      <div class="stat">
+        <span class="stat-n">98.3<span style="font-size:0.55em">s</span></span>
+        <span class="stat-l">cold start &mdash; the scale-to-zero tax</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="chart-wrap">
+        <svg class="chart" viewBox="0 0 720 300" role="img"
+             aria-label="Throughput climbs from 154 to 4,699 output tokens per second as concurrency rises from 1 to 64, while p50 latency rises only from 788 to 2,068 milliseconds.">
+          <!-- grid -->
+          <g stroke="var(--rule)" stroke-width="1">
+            <line x1="60" y1="30"  x2="680" y2="30"  />
+            <line x1="60" y1="87"  x2="680" y2="87"  />
+            <line x1="60" y1="144" x2="680" y2="144" />
+            <line x1="60" y1="201" x2="680" y2="201" />
+            <line x1="60" y1="260" x2="680" y2="260" stroke="var(--muted)" />
+          </g>
+          <!-- y labels -->
+          <g font-family="ui-monospace, monospace" font-size="10" fill="var(--muted)">
+            <text x="52" y="34"  text-anchor="end">4700</text>
+            <text x="52" y="91"  text-anchor="end">3525</text>
+            <text x="52" y="148" text-anchor="end">2350</text>
+            <text x="52" y="205" text-anchor="end">1175</text>
+            <text x="52" y="264" text-anchor="end">0</text>
+            <text x="60" y="286" text-anchor="start" fill="var(--accent)">tok/s</text>
+          </g>
+          <!-- x labels -->
+          <g font-family="ui-monospace, monospace" font-size="10" fill="var(--muted)" text-anchor="middle">
+            <text x="60"  y="277">1</text>
+            <text x="163" y="277">2</text>
+            <text x="267" y="277">4</text>
+            <text x="370" y="277">8</text>
+            <text x="473" y="277">16</text>
+            <text x="577" y="277">32</text>
+            <text x="680" y="277">64</text>
+            <text x="370" y="295" fill="var(--ink-2)">concurrency</text>
+          </g>
+          <!-- latency line (scaled to 4000ms full-height) -->
+          <polyline fill="none" stroke="var(--muted)" stroke-width="2" stroke-dasharray="5 4"
+            points="60,215 163,213 267,213 370,211 473,208 577,180 680,141" />
+          <!-- throughput line -->
+          <polyline fill="none" stroke="var(--accent)" stroke-width="2.5"
+            points="60,252 163,246 267,231 370,206 473,156 577,100 680,30" />
+          <!-- throughput points -->
+          <g fill="var(--accent)">
+            <circle cx="60"  cy="252" r="3.5" />
+            <circle cx="163" cy="246" r="3.5" />
+            <circle cx="267" cy="231" r="3.5" />
+            <circle cx="370" cy="206" r="3.5" />
+            <circle cx="473" cy="156" r="3.5" />
+            <circle cx="577" cy="100" r="3.5" />
+            <circle cx="680" cy="30"  r="5" />
+          </g>
+          <g font-family="ui-monospace, monospace" font-size="10" fill="var(--accent)" font-weight="600">
+            <text x="672" y="20" text-anchor="end">4,699 tok/s</text>
+          </g>
+          <g font-family="ui-monospace, monospace" font-size="10" fill="var(--muted)">
+            <text x="672" y="133" text-anchor="end">2,068 ms p50</text>
+          </g>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--accent)"></span> output tokens/sec</span>
+        <span><span class="swatch" style="background:var(--muted)"></span> end-to-end p50 latency</span>
+      </div>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Concurrency</th><th>e2e p50</th><th>e2e p95</th><th>TTFT p95</th>
+            <th>Output tok/s</th><th>$ / 1M out</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>788 ms</td><td>789 ms</td><td>26 ms</td><td>154</td><td>$8.25</td></tr>
+          <tr><td>2</td><td>815 ms</td><td>817 ms</td><td>36 ms</td><td>297</td><td>$4.27</td></tr>
+          <tr><td>4</td><td>818 ms</td><td>820 ms</td><td>33 ms</td><td>591</td><td>$2.14</td></tr>
+          <tr><td>8</td><td>854 ms</td><td>866 ms</td><td>498 ms</td><td>1,096</td><td>$1.16</td></tr>
+          <tr><td>16</td><td>907 ms</td><td>930 ms</td><td>82 ms</td><td>2,125</td><td>$0.60</td></tr>
+          <tr><td>32</td><td>1,395 ms</td><td>1,412 ms</td><td>532 ms</td><td>3,262</td><td>$0.39</td></tr>
+          <tr class="hi"><td>64</td><td>2,068 ms</td><td>2,099 ms</td><td>1,059 ms</td><td>4,699</td><td>$0.27</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <p>
+        The shape is the point: continuous batching converts idle GPU into throughput almost linearly
+        while p50 latency stays nearly flat to concurrency 16, then bends. Self-hosting only beats
+        managed inference at high utilisation, and this curve is where that break-even actually sits.
+      </p>
+      <p>
+        The honest wart is TTFT p95. It spikes at concurrency 8, 32 and 64 &mdash; queueing as a batch
+        fills faster than it drains. Median time-to-first-token stays fine, so reporting only p50
+        would have hidden it. It's in the table because leaving it out would make the curve look
+        cleaner than the system is.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <section>
+    <div class="sec-head">
+      <div class="row">
+        <h2>Architecture</h2>
+        <span class="chip measured">Running</span>
+      </div>
+      <p class="measure" style="color:var(--muted); font-size:0.92rem;">
+        Four analysis nodes fan out in parallel from a single request and barrier into the
+        recommendation. Inference never leaves the container &mdash; FastAPI and SGLang are colocated,
+        so the model call is a localhost hop.
+      </p>
+    </div>
+
+    <div class="flow">
+      <div class="tier">
+        <span class="tier-l">Client</span>
+        <div class="nodes"><span class="node">Streamlit UI</span><span class="node">REST /analyze</span><span class="node">MCP client</span></div>
+      </div>
+      <div class="arrow">&darr;</div>
+      <div class="tier">
+        <span class="tier-l">Orchestration &mdash; LangGraph, parallel fan-out</span>
+        <div class="nodes">
+          <span class="node par">sentiment</span>
+          <span class="node par">behaviours</span>
+          <span class="node par">outcome</span>
+          <span class="node par">retrieve</span>
+          <span class="node">&rarr; barrier &rarr; recommend</span>
+        </div>
+      </div>
+      <div class="arrow">&darr;</div>
+      <div class="tier">
+        <span class="tier-l">Inference &amp; storage</span>
+        <div class="nodes">
+          <span class="node">SGLang · Qwen2.5-7B · H100</span>
+          <span class="node">xgrammar constrained decode</span>
+          <span class="node">pgvector HNSW · Neon</span>
+          <span class="node">XGBoost</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>Why scale-to-zero</h3>
+        <p>An always-on H100 is roughly $1,500/month. This idles at $0 and costs about $0.003&ndash;0.012 per warm request. The price is a ~98-second cold start on the first hit, documented rather than hidden.</p>
+      </div>
+      <div class="card">
+        <h3>Why one model, not two</h3>
+        <p>A single 7B instruct model serves classification and recommendation. The small+large tier is a real design in the doc, but it isn't deployed &mdash; so it's written as future work, not as architecture.</p>
+      </div>
+      <div class="card">
+        <h3>Why XGBoost sits in an LLM pipeline</h3>
+        <p>Breakdown risk wants a calibrated probability in milliseconds, not a generated sentence. It is deliberately the one non-LLM component &mdash; and the one that produced the clearest negative result.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <section>
+    <div class="sec-head">
+      <div class="row">
+        <h2>What it actually returns</h2>
+        <span class="chip measured">Live output</span>
+      </div>
+      <p class="measure" style="color:var(--muted); font-size:0.92rem;">
+        Verbatim from the deployed endpoint, on a transcript where two campers both need firewood and
+        one issues an ultimatum. The model receives turn text only &mdash; no labels, no scenario name.
+      </p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Turn</th><th>Emotion</th><th>Escalation</th><th class="wrap-ok">Model's rationale</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>neutral</td><td>0.10</td><td class="wrap-ok">introduces request</td></tr>
+          <tr><td>1</td><td>collaborative</td><td>0.20</td><td class="wrap-ok">offers a reason and willingness to negotiate</td></tr>
+          <tr><td>2</td><td>frustrated</td><td>0.80</td><td class="wrap-ok">disputes need, confrontational tone</td></tr>
+          <tr class="hi"><td>3</td><td>urgent</td><td>1.00</td><td class="wrap-ok">threatens to end negotiation</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <p>
+        Alongside it, the behaviour detector flagged exactly two of six categories &mdash;
+        <code>ultimatums</code> on turn 3 and <code>personal_attacks</code> on turn 2 &mdash; each with the
+        quoted span that triggered it, and the other four correctly false. Structured output is
+        guaranteed at the serving layer by grammar-constrained decoding, so there is no JSON-repair
+        loop anywhere in the codebase.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <section>
+    <div class="sec-head">
+      <div class="row">
+        <h2>Three things that went wrong</h2>
+        <span class="chip measured">Documented</span>
+      </div>
+      <p class="measure" style="color:var(--muted); font-size:0.92rem;">
+        The most useful part of the project. Each of these changed a design decision, and two of them
+        are findings rather than bugs.
+      </p>
+    </div>
+
+    <div class="fails">
+      <details class="fail" open>
+        <summary><span class="tag">01</span> RAG fabricated a citation while appearing to be grounded</summary>
+        <div class="fail-body">
+          <p>
+            The recommendation cited a real retrieved case to justify walking away:
+          </p>
+          <pre>"...as seen in [casino-204], where a walk-away strategy
+ led to an agreement that balanced both parties' needs."</pre>
+          <p>The retrieved case contains no walk-away. It is an uneventful 18&ndash;18 trade:</p>
+          <pre>"Outcome: Agreement reached &mdash; agent_2 gets 0 Firewood,
+ 2 Water, 2 Food... Lesson: A balanced deal &mdash; both
+ parties scored 18 points."</pre>
+          <p>
+            <strong>Root cause:</strong> retrieval returned five amicable agreements at cosine scores of
+            0.42&ndash;0.44 for a hostile-conflict query &mdash; the query is raw dialogue text while the
+            corpus documents are structured summaries, a vocabulary mismatch. With no supporting
+            evidence in context and a prompt that asks it to cite sources, the model cited anyway and
+            invented the supporting detail.
+          </p>
+          <p>
+            <strong>Why it matters:</strong> this is the exact failure retrieval-augmentation is meant to
+            prevent, occurring inside a citation that looks trustworthy. It is reproducible, and it is
+            the reason the RAG-versus-no-RAG ablation is the project's headline experiment rather than
+            a formality.
+          </p>
+        </div>
+      </details>
+
+      <details class="fail">
+        <summary><span class="tag">02</span> The prediction target was near-degenerate, and the metrics hid it</summary>
+        <div class="fail-body">
+          <p>
+            The breakdown-risk model scored <strong>97.1% accuracy</strong>. Impressive until you compute
+            the majority-class baseline on the same split: <strong>96.1%</strong>.
+          </p>
+          <div class="scroller">
+            <table>
+              <thead><tr><th>Model</th><th>Accuracy</th><th>F1</th><th>Breakdowns caught</th></tr></thead>
+              <tbody>
+                <tr><td>Always predict "deal"</td><td>96.1%</td><td>0.980</td><td>0 of 4</td></tr>
+                <tr><td>XGBoost</td><td>97.1%</td><td>0.985</td><td>1 of 4</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            The entire gain is <strong>one dialogue out of 102</strong>. The isotonic calibrator collapsed
+            to near-constant output &mdash; 100 of 102 predictions in a single bin at 0.99 &mdash; so the
+            calibration claim in the design doc is unsupported on this target.
+          </p>
+          <p>
+            <strong>Root cause:</strong> the corpus is a cooperative task where 97.6% of negotiations
+            succeed. Predicting a 2.4% event from 25 examples isn't a modelling problem, it's the wrong
+            question for this data.
+          </p>
+          <p>
+            <strong>What changed:</strong> the eval harness now reports base rate, accuracy lift and
+            minority-class recall next to accuracy, and <strong>the result CSV was deliberately not
+            committed</strong> &mdash; publishing a degenerate artifact would be the exact overclaim the
+            project exists to avoid. The target is being reframed onto an outcome with real variance.
+          </p>
+        </div>
+      </details>
+
+      <details class="fail">
+        <summary><span class="tag">03</span> The dataset's only host died mid-project</summary>
+        <div class="fail-body">
+          <p>
+            CraigslistBargain is distributed from a single CodaLab worksheet. It began returning
+            <code>HTTP 500</code> permanently &mdash; and the HuggingFace mirror turned out to be a loading
+            script that proxies the same dead endpoint, so it failed identically.
+          </p>
+          <p>
+            <strong>What saved it:</strong> the schema was source-agnostic by design. Swapping corpora
+            meant writing one ingestion script, not rebuilding a pipeline. The project re-based onto
+            CaSiNo &mdash; which turned out to fit better anyway, carrying persuasion-strategy
+            annotations, personality profiles and per-party outcome scores that the previous corpus
+            lacked.
+          </p>
+          <p>
+            <strong>What it cost:</strong> a rewrite of feature engineering, the case-corpus builder and
+            three test modules. <strong>What it taught:</strong> "available today" is not a dataset
+            property you can rely on, and the abstraction that felt like over-engineering in week one
+            is what made week four survivable.
+          </p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <section>
+    <div class="sec-head">
+      <div class="row"><h2>Status, stated plainly</h2></div>
+      <p class="measure" style="color:var(--muted); font-size:0.92rem;">
+        A reader should be able to tell measured work from intended work without reading the code.
+      </p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Component</th><th>Status</th><th class="wrap-ok">Evidence</th></tr></thead>
+        <tbody>
+          <tr><td>Serving benchmarks</td><td><span class="chip measured">Measured</span></td><td class="wrap-ok">3 CSVs + 1,408-request raw trace</td></tr>
+          <tr><td>Deployed pipeline</td><td><span class="chip measured">Measured</span></td><td class="wrap-ok">Live endpoint, verified end-to-end</td></tr>
+          <tr><td>Outcome model</td><td><span class="chip measured">Measured</span></td><td class="wrap-ok">Negative result &mdash; see failure 02</td></tr>
+          <tr><td>RAG retrieval quality</td><td><span class="chip unverified">Unverified</span></td><td class="wrap-ok">recall@k / MRR harness not yet run</td></tr>
+          <tr><td>RAG vs no-RAG ablation</td><td><span class="chip unverified">Unverified</span></td><td class="wrap-ok">The headline experiment, still pending</td></tr>
+          <tr><td>Sentiment accuracy</td><td><span class="chip unverified">Unverified</span></td><td class="wrap-ok">No labelled gold set for this taxonomy</td></tr>
+          <tr><td>TensorRT-LLM engines</td><td><span class="chip notbuilt">Not built</span></td><td class="wrap-ok">Target architecture only &mdash; never claimed as done</td></tr>
+          <tr><td>Quantisation ablation</td><td><span class="chip notbuilt">Not built</span></td><td class="wrap-ok">Depends on the engine build above</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <p>
+        Nothing on this page is inferred from code that hasn't run. The design document names a
+        TensorRT-LLM serving path that would likely beat SGLang on this hardware; no engine was built,
+        so no speedup is claimed. That distinction is the whole method.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================= -->
+  <section>
+    <div class="sec-head">
+      <div class="row"><h2>Decisions worth defending</h2></div>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Decision</th><th class="wrap-ok">Chosen over</th><th class="wrap-ok">Because</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Serverless GPU</td>
+            <td class="wrap-ok">Always-on rental</td>
+            <td class="wrap-ok">$0 idle versus ~$1,500/mo, for a demo nobody hits at 3am. Cost: a 98s cold start.</td>
+          </tr>
+          <tr>
+            <td>Self-hosted weights</td>
+            <td class="wrap-ok">Managed inference API</td>
+            <td class="wrap-ok">The serving numbers above are only obtainable if you own the serving layer.</td>
+          </tr>
+          <tr>
+            <td>Managed Postgres</td>
+            <td class="wrap-ok">Self-hosted pgvector</td>
+            <td class="wrap-ok">One connection string beats a container that dies with each scheduler allocation.</td>
+          </tr>
+          <tr>
+            <td>Agent calls tools directly</td>
+            <td class="wrap-ok">Agent as MCP client of itself</td>
+            <td class="wrap-ok">Two thin adapters over one implementation, avoiding a self-network-hop.</td>
+          </tr>
+          <tr>
+            <td>Order-invariant features</td>
+            <td class="wrap-ok">Per-party columns</td>
+            <td class="wrap-ok">Which negotiator is labelled "agent_1" is arbitrary; per-party columns learn that artifact.</td>
+          </tr>
+          <tr>
+            <td>Strategy labels excluded</td>
+            <td class="wrap-ok">Using all annotations</td>
+            <td class="wrap-ok">Only 38% of dialogues carry them, so their presence encodes a selection boundary.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>Accord &mdash; negotiation intelligence. Systems build by Sameer Rajendra.</span>
+    <span>Problem framing and behavioural taxonomy credited to Y. Sawant, MSc thesis, Cranfield School of Management, 2024. Corpus: CaSiNo (Chawla et al., NAACL 2021).</span>
+    <span>Every figure on this page is reproducible from the repository's committed results.</span>
+  </footer>
+
+</div>

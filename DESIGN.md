@@ -44,9 +44,13 @@ Given a negotiation transcript (normalized [`Transcript`](data/schema.py)), `/an
   OSS-inference endpoints (Together / Fireworks / Cerebras / Groq) are a documented fallback if
   the demo cold-start proves unusable, but the default is self-hosted SGLang on rented GPU.
 - **Team:** solo. Favor one serving path done rigorously over many done shallowly.
-- **Data:** CraigslistBargain (real buyer/seller price-haggling; He et al., EMNLP 2018) — replaced
-  an earlier CaSiNo-based ingestion. Generalization to Sawant's thesis's business-contract framing
-  is explicitly untested (§9).
+- **Data:** CaSiNo (Chawla et al., NAACL 2021) — 1,030 campsite resource-negotiation dialogues
+  (Food/Water/Firewood), 396 with utterance-level persuasion-strategy annotations, plus per-party
+  priorities, personality (Big-Five, SVO), and outcome points. Read from the HuggingFace parquet
+  mirror `kchawla123/casino` (script-free). This re-based off CraigslistBargain in 2026-07 when
+  CodaLab — the only host for CraigslistBargain's raw parsed.json — went permanently 500; CaSiNo
+  is also the corpus `schema.py` was originally built for. Generalization to Sawant's thesis's
+  business-contract framing is explicitly untested (§9).
 
 ---
 
@@ -311,13 +315,16 @@ Two layers — **serving** (the GPU/inference story) and **task** (does it actua
 ---
 
 ## 9. Limitations (stated up front)
-- Trained/evaluated on **consumer marketplace price-haggling** (CraigslistBargain). Generalization
-  to Sawant's thesis's **business-contract** framing is **untested** — and measuring that gap is
-  itself a finding this repo will report, not hide.
-- CraigslistBargain's per-turn dialogue-act intents (`init-price`, `counter-price`, `agree`, ...)
-  are rule-based, not human-annotated, and are a coarser signal than a persuasion-strategy or
-  sentiment taxonomy — treated as a weak proxy in early evals, explicitly caveated as such, not
-  gold-standard labels.
+- Trained/evaluated on **cooperative campsite resource-negotiation** (CaSiNo). Generalization
+  to Sawant's thesis's **business-contract** framing is **untested** — though CaSiNo's *multi-issue*
+  structure (trading across Food/Water/Firewood) is closer to multi-term contract negotiation than
+  single-price haggling was. Measuring that gap is itself a finding this repo will report, not hide.
+- CaSiNo is a **cooperative** task, so most dialogues reach agreement — the outcome model's
+  positive class dominates. `results/outcome.csv` commits the base rate next to accuracy/F1 so a
+  high number that merely tracks the majority class is visible, not hidden.
+- Persuasion-strategy annotations cover only **396 of 1,030** dialogues. They power the RAG corpus
+  and analysis, but are deliberately **excluded from the outcome model's features** — their
+  presence is a dataset-selection artifact, not a property of the negotiation.
 - **No hosted-API baseline** by design — comparisons are open-vs-open (served vs zero-shot,
   RAG vs no-RAG), so "beats a frontier API" is explicitly *not* a claim made here.
 - The eval judge is itself an open model; LLM-judge scores carry self-consistency and bias caveats.

@@ -3,3 +3,11 @@
 #   pip install -r requirements.txt -r requirements-dev.txt
 pytest>=8
 ruff>=0.5
+
+# Data prep only (local `python -m data.ingest_casino --download`): read the
+# CaSiNo parquet off HuggingFace's auto-converted branch. Not runtime deps —
+# the ingested JSONL ships into Modal via add_local_dir, so the serving image
+# never needs these.
+pyarrow>=15
+huggingface-hub>=0.23
+pandas>=2.0

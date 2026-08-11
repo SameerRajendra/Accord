@@ -1,125 +1,92 @@
 """Tests for the RAG case-corpus builder (pure, deterministic — no LLM).
 
-Fixtures build `Transcript` objects directly in CraigslistBargain's shape
-(buyer/seller party_ids, target-based metadata, single shared-price outcome)
-rather than importing from ingest_craigslist, keeping this module's tests
-independent of ingestion's raw-dict format.
+Fixtures build `Transcript` objects directly in CaSiNo's shape (agent_1/agent_2
+party_ids, priority rankings, strategy-annotated turns, item-split outcome with
+points) rather than importing from ingestion, keeping these tests independent
+of the raw-parquet format.
 """
 
 from pathlib import Path
 
-from data.build_case_corpus import build_case, build_cases, build_corpus
+from data.build_case_corpus import build_case, build_cases, build_corpus, build_playbook
 from data.schema import Action, CaseDocument, Outcome, Party, Transcript, Turn
 
 
 def _agreement_transcript() -> Transcript:
     return Transcript(
-        dialogue_id="C_agreement_0001",
-        source="craigslist_bargain",
-        domain="craigslist_price_negotiation",
+        dialogue_id="1",
+        source="casino",
+        domain="campsite_resources",
         parties=[
             Party(
-                party_id="buyer",
-                priorities=None,
-                outcome_points=None,
-                metadata={
-                    "role": "buyer",
-                    "target": 243,
-                    "bottomline": None,
-                    "item_category": "electronics",
-                    "item_title": "GoPro Hero4 Black",
-                    "item_listed_price": 265,
-                },
+                party_id="agent_1",
+                priorities={"Firewood": "High", "Food": "Medium", "Water": "Low"},
+                outcome_points=25,
+                satisfaction="Extremely satisfied",
+                opponent_likeness="Extremely like",
+                metadata={"personality": {"svo": "prosocial"}},
             ),
             Party(
-                party_id="seller",
-                priorities=None,
-                outcome_points=None,
-                metadata={
-                    "role": "seller",
-                    "target": 265,
-                    "bottomline": None,
-                    "item_category": "electronics",
-                    "item_title": "GoPro Hero4 Black",
-                    "item_listed_price": 265,
-                },
+                party_id="agent_2",
+                priorities={"Water": "High", "Food": "Medium", "Firewood": "Low"},
+                outcome_points=13,
+                metadata={"personality": {"svo": "proself"}},
             ),
         ],
         turns=[
-            Turn(index=0, speaker="buyer", text="hi there", metadata={"intent": "intro"}),
-            Turn(index=1, speaker="seller", text="Good Day!", metadata={"intent": "unknown"}),
-            Turn(
-                index=2,
-                speaker="buyer",
-                text="how about $243?",
-                metadata={"intent": "init-price", "price": 243.0},
-            ),
+            Turn(index=0, speaker="agent_1", text="Hi there!", strategies=["small-talk", "elicit-pref"]),
+            Turn(index=1, speaker="agent_2", text="I need water", strategies=["self-need"]),
+            Turn(index=2, speaker="agent_1", text="Let's find a fair split", strategies=["vouch-fair", "promote-coordination"]),
             Turn(
                 index=3,
-                speaker="seller",
-                text="Offer",
+                speaker="agent_1",
+                text="Submit-Deal",
                 action=Action.SUBMIT_DEAL,
-                action_data={"price": 243.0, "sides": ""},
-                metadata={"intent": "offer", "price": 243.0},
+                action_data={"issue2youget": {"Firewood": "3", "Food": "2"}, "issue2theyget": {"Water": "3", "Food": "1"}},
             ),
-            Turn(index=4, speaker="buyer", text="Accept", action=Action.ACCEPT_DEAL, metadata={"intent": "accept"}),
+            Turn(index=4, speaker="agent_2", text="Accept-Deal", action=Action.ACCEPT_DEAL),
         ],
         outcome=Outcome(
             agreement_reached=True,
-            final_deal={"buyer": {"price_usd": 243}, "seller": {"price_usd": 243}},
-            points={},
+            final_deal={"agent_1": {"Firewood": 3, "Food": 2}, "agent_2": {"Water": 3, "Food": 1}},
+            points={"agent_1": 25, "agent_2": 13},
         ),
-        has_strategy_annotations=False,
-        metadata={"split": "train", "category": "electronics"},
+        has_strategy_annotations=True,
+        metadata={"split": "train"},
     )
 
 
 def _no_agreement_transcript() -> Transcript:
     return Transcript(
-        dialogue_id="C_quit_0001",
-        source="craigslist_bargain",
-        domain="craigslist_price_negotiation",
+        dialogue_id="2",
+        source="casino",
+        domain="campsite_resources",
         parties=[
-            Party(
-                party_id="buyer",
-                metadata={"role": "buyer", "target": 1200, "bottomline": None,
-                          "item_category": "housing", "item_title": "Apartment", "item_listed_price": 2350},
-            ),
-            Party(
-                party_id="seller",
-                metadata={"role": "seller", "target": 2350, "bottomline": None,
-                          "item_category": "housing", "item_title": "Apartment", "item_listed_price": 2350},
-            ),
+            Party(party_id="agent_1", priorities={"Firewood": "High", "Food": "Medium", "Water": "Low"}, metadata={}),
+            Party(party_id="agent_2", priorities={"Firewood": "High", "Water": "Medium", "Food": "Low"}, metadata={}),
         ],
         turns=[
-            Turn(index=0, speaker="seller", text="Interested?", metadata={"intent": "intro"}),
-            Turn(
-                index=1,
-                speaker="seller",
-                text="Offer",
-                action=Action.SUBMIT_DEAL,
-                action_data={"price": 1800.0, "sides": ""},
-                metadata={"intent": "offer", "price": 1800.0},
-            ),
-            Turn(index=2, speaker="seller", text="Quit", action=Action.WALK_AWAY, metadata={"intent": "quit"}),
+            Turn(index=0, speaker="agent_1", text="I really need all the firewood", strategies=["self-need"]),
+            Turn(index=1, speaker="agent_2", text="No, I need it more", strategies=["uv-part"]),
+            Turn(index=2, speaker="agent_1", text="Walk-Away", action=Action.WALK_AWAY),
         ],
         outcome=Outcome(agreement_reached=False, final_deal=None, points={}),
-        has_strategy_annotations=False,
-        metadata={"split": "validation", "category": "housing"},
+        has_strategy_annotations=True,
+        metadata={"split": "validation"},
     )
 
 
-def test_agreement_case_renders_setup_acts_outcome_lesson():
+def test_agreement_case_renders_priorities_strategies_outcome_lesson():
     case = build_case(_agreement_transcript())
     assert case.kind == "case"
-    assert case.case_id == "craigslist_bargain-C_agreement_0001"
+    assert case.case_id == "casino-1"
     text = case.text
-    assert "Listed at $265 (electronics)" in text
-    assert "buyer target: $243" in text and "seller target: $265" in text
-    assert "init-price (1)" in text  # meaningful intent counted
-    assert "Outcome: Agreement reached at $243." in text
-    # price ($243) sits exactly at buyer's target -> favors the buyer
-    assert "favored the buyer" in text
+    assert "agent_1 priorities: High=Firewood" in text
+    assert "agent_2 priorities: High=Water" in text
+    assert "vouch-fair (1)" in text or "promote-coordination (1)" in text
+    assert "Agreement reached" in text
+    assert "agent_1=25" in text and "agent_2=13" in text  # points rendered
+    assert "favored agent_1" in text  # 25 > 13
 
 
 def test_agreement_case_metadata():
@@ -127,21 +94,17 @@ def test_agreement_case_metadata():
     m = case.metadata
     assert m["outcome_label"] == "agreement"
     assert m["agreement_reached"] is True
-    assert m["final_price_usd"] == 243
-    assert m["buyer_target"] == 243
-    assert m["seller_target"] == 265
-    assert m["category"] == "electronics"
+    assert m["points"] == {"agent_1": 25, "agent_2": 13}
     assert m["split"] == "train"
-    assert "init-price" in m["dominant_dialogue_acts"]
+    assert m["has_strategy_annotations"] is True
+    assert len(m["dominant_strategies"]) > 0
 
 
-def test_protocol_intents_excluded_from_dialogue_acts():
-    """offer/accept/unknown intents shouldn't appear as 'dialogue acts observed'
-    (they're protocol echoes, already captured in the outcome line)."""
+def test_protocol_turns_excluded_from_strategies():
+    """Submit-Deal / Accept-Deal turns carry no strategies and shouldn't surface."""
     case = build_case(_agreement_transcript())
-    assert "offer (1)" not in case.text
-    assert "accept (1)" not in case.text
-    assert "unknown" not in case.text
+    assert "Submit-Deal" not in case.text
+    assert "Accept-Deal" not in case.text
 
 
 def test_no_agreement_case_flags_breakdown():
@@ -150,7 +113,15 @@ def test_no_agreement_case_flags_breakdown():
     assert "ended via walk_away" in case.text
     assert "broke down" in case.text
     assert case.metadata["outcome_label"] == "no_agreement"
-    assert case.metadata["final_price_usd"] is None
+    assert case.metadata["points"] == {}
+
+
+def test_playbook_covers_all_strategies():
+    docs = build_playbook()
+    assert len(docs) == 10  # the CaSiNo 10-strategy taxonomy
+    assert all(d.kind == "strategy" and d.source == "playbook" for d in docs)
+    ids = {d.case_id for d in docs}
+    assert "strategy-vouch-fair" in ids and "strategy-uv-part" in ids
 
 
 def test_case_document_roundtrips():
@@ -158,17 +129,10 @@ def test_case_document_roundtrips():
     assert CaseDocument.model_validate_json(case.model_dump_json()) == case
 
 
-def test_build_cases_covers_every_transcript():
-    """Unlike CaSiNo, there's no annotated/unannotated split — every dialogue
-    becomes a case."""
-    cases = build_cases([_agreement_transcript(), _no_agreement_transcript()])
-    assert len(cases) == 2
-
-
-def test_build_corpus_writes_jsonl(tmp_path: Path):
+def test_build_corpus_writes_cases_plus_playbook(tmp_path: Path):
     import json
 
-    in_path = tmp_path / "craigslist_bargain.jsonl"
+    in_path = tmp_path / "casino.jsonl"
     in_path.write_text(
         _agreement_transcript().model_dump_json() + "\n" + _no_agreement_transcript().model_dump_json() + "\n",
         encoding="utf-8",
@@ -178,10 +142,22 @@ def test_build_corpus_writes_jsonl(tmp_path: Path):
     summary = build_corpus(in_path, out_path)
 
     assert summary["cases"] == 2
+    assert summary["strategy_docs"] == 10
+    assert summary["documents_total"] == 12
     assert summary["agreements"] == 1
     assert summary["agreement_rate"] == 0.5
 
     lines = out_path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 2
+    assert len(lines) == 12
     docs = [json.loads(line) for line in lines]
-    assert all(d["kind"] == "case" and d["source"] == "craigslist_bargain" for d in docs)
+    kinds = {d["kind"] for d in docs}
+    assert kinds == {"case", "strategy"}
+
+
+def test_build_corpus_no_playbook_flag(tmp_path: Path):
+    in_path = tmp_path / "casino.jsonl"
+    in_path.write_text(_agreement_transcript().model_dump_json() + "\n", encoding="utf-8")
+    out_path = tmp_path / "case_corpus.jsonl"
+    summary = build_corpus(in_path, out_path, include_playbook=False)
+    assert summary["strategy_docs"] == 0
+    assert summary["documents_total"] == 1

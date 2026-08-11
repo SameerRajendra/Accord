@@ -13,7 +13,7 @@ a Neon account, a Langfuse cloud account (free tier is enough).
 
 ```bash
 # From the repo root:
-python -m data.ingest_craigslist --download   # -> data/processed/craigslist_bargain.jsonl
+python -m data.ingest_casino --download   # -> data/processed/casino.jsonl
 python -m data.build_case_corpus               # -> data/processed/case_corpus.jsonl
 ```
 
@@ -79,18 +79,21 @@ psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM langchain_pg_embedding;"
 
 ---
 
-## 5. Deploy the GPU app (SGLang + FastAPI)
+## 5. Deploy
 
 ```bash
 modal deploy infra/modal/app.py
 ```
 
-This deploys **both** `accord` (GPU class + FastAPI ASGI) and `accord-ui`
-(Streamlit). The GPU URL looks like:
+This deploys the single `accord` app with all four entrypoints (GPU class +
+FastAPI ASGI, Streamlit `ui`, and the two one-shot functions). Two URLs are
+printed — the API:
 
 ```
 https://<workspace>--accord-accordserver-api.modal.run
 ```
+
+…and the UI (`https://<workspace>--accord-ui.modal.run`).
 
 Update the secret so the UI knows how to reach the API:
 
@@ -110,13 +113,13 @@ curl https://<workspace>--accord-accordserver-api.modal.run/health
 # Full analysis — first request pays ~60–90 s cold start; second request is warm.
 curl -X POST https://<workspace>--accord-accordserver-api.modal.run/analyze \
   -H "Content-Type: application/json" \
-  -d @data/processed/sample_transcript.json
+  -d @examples/sample_request.json
 ```
 
 Or open the UI in a browser and paste a transcript:
 
 ```
-https://<workspace>--accord-ui-ui.modal.run
+https://<workspace>--accord-ui.modal.run
 ```
 
 That's the URL to share with Yash.
@@ -149,7 +152,7 @@ Two demo sessions a day (~20 requests each, most warm) is well under $2/mo.
 
 ```bash
 modal app stop accord
-modal app stop accord-ui
+# (one app now — `accord` covers the API, the UI, and both one-shot functions)
 # Volumes and Secrets persist — delete via `modal volume delete` /
 # `modal secret delete` if you want a full wipe.
 ```

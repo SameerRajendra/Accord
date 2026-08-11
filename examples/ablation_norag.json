@@ -1,0 +1,29 @@
+{
+  "transcript": {
+    "dialogue_id": "example-1",
+    "source": "manual",
+    "domain": "campsite_resources",
+    "parties": [
+      {
+        "party_id": "agent_1",
+        "priorities": {"Firewood": "High", "Food": "Medium", "Water": "Low"},
+        "metadata": {"personality": {"svo": "proself", "big-five": {"agreeableness": 4.0, "emotional-stability": 3.5, "openness-to-experiences": 5.0}}}
+      },
+      {
+        "party_id": "agent_2",
+        "priorities": {"Firewood": "High", "Water": "Medium", "Food": "Low"},
+        "metadata": {"personality": {"svo": "prosocial", "big-five": {"agreeableness": 6.0, "emotional-stability": 5.0, "openness-to-experiences": 5.5}}}
+      }
+    ],
+    "turns": [
+      {"index": 0, "speaker": "agent_1", "text": "Hi! I'm hoping to grab extra firewood - our group has a lot of seniors who need to stay warm."},
+      {"index": 1, "speaker": "agent_2", "text": "I need firewood too, my dog has fleas and the fire keeps them off. I can't give it up."},
+      {"index": 2, "speaker": "agent_1", "text": "There's no way you need it more than a group of elderly people. That's a bit ridiculous."},
+      {"index": 3, "speaker": "agent_2", "text": "Take it or leave it - I'm keeping all three firewood or there's no deal."}
+    ],
+    "outcome": {"agreement_reached": false, "final_deal": null, "points": {}},
+    "has_strategy_annotations": false,
+    "metadata": {"split": "demo"}
+  },
+  "use_rag": false
+}

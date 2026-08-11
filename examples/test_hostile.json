@@ -1,0 +1,22 @@
+{
+  "transcript": {
+    "dialogue_id": "test-hostile",
+    "source": "manual",
+    "domain": "campsite_resources",
+    "parties": [
+      {"party_id": "agent_1", "priorities": {"Water": "High", "Food": "Medium", "Firewood": "Low"}, "metadata": {}},
+      {"party_id": "agent_2", "priorities": {"Water": "High", "Firewood": "Medium", "Food": "Low"}, "metadata": {}}
+    ],
+    "turns": [
+      {"index": 0, "speaker": "agent_1", "text": "I need all the water. All of it."},
+      {"index": 1, "speaker": "agent_2", "text": "No."},
+      {"index": 2, "speaker": "agent_1", "text": "If you don't hand it over I'll report you to the ranger and make sure you lose your campsite."},
+      {"index": 3, "speaker": "agent_2", "text": "Whatever."},
+      {"index": 4, "speaker": "agent_1", "text": "You're being completely unreasonable and frankly pathetic."}
+    ],
+    "outcome": {"agreement_reached": false, "final_deal": null, "points": {}},
+    "has_strategy_annotations": false,
+    "metadata": {"split": "demo"}
+  },
+  "use_rag": true
+}

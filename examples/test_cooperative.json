@@ -1,0 +1,21 @@
+{
+  "transcript": {
+    "dialogue_id": "test-cooperative",
+    "source": "manual",
+    "domain": "campsite_resources",
+    "parties": [
+      {"party_id": "agent_1", "priorities": {"Food": "High", "Water": "Medium", "Firewood": "Low"}, "metadata": {}},
+      {"party_id": "agent_2", "priorities": {"Firewood": "High", "Water": "Medium", "Food": "Low"}, "metadata": {}}
+    ],
+    "turns": [
+      {"index": 0, "speaker": "agent_1", "text": "Hi there! What matters most to you? I mainly need food for my group."},
+      {"index": 1, "speaker": "agent_2", "text": "Firewood is my priority, food I can go without. Sounds like we're not really competing!"},
+      {"index": 2, "speaker": "agent_1", "text": "Perfect. How about you take all 3 firewood, I take all 3 food, and we split the water?"},
+      {"index": 3, "speaker": "agent_2", "text": "That works well for both of us. Deal!"}
+    ],
+    "outcome": {"agreement_reached": false, "final_deal": null, "points": {}},
+    "has_strategy_annotations": false,
+    "metadata": {"split": "demo"}
+  },
+  "use_rag": true
+}

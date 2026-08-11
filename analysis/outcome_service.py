@@ -65,17 +65,9 @@ def predict_from_transcript(transcript: Transcript) -> Optional[float]:
         return None
 
     features = extract_features(transcript)
-    # Reindex to the trained column set so category one-hots (present at
-    # train time but absent from this single-row inference) don't drop
-    # features silently.
-    row = pd.DataFrame([features])
-    # Apply the same category one-hot expansion as build_feature_matrix.
-    from analysis.outcome_model import CATEGORY_VALUES
-
-    category = row.pop("category").iloc[0] if "category" in row.columns else "unknown"
-    for cat in CATEGORY_VALUES:
-        row[f"category_{cat}"] = 1.0 if category == cat else 0.0
-    row = row.reindex(columns=feature_columns, fill_value=0.0)
+    # Reindex to the trained column set so a single-row inference always has
+    # exactly the columns (and order) the model was trained on.
+    row = pd.DataFrame([features]).reindex(columns=feature_columns, fill_value=0.0)
 
     proba = predict_calibrated(model, calibrator, row)
     # P(agreement_reached=1); breakdown risk is (1 - P). Return the agreement

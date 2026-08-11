@@ -1,20 +1,20 @@
 """Modal deploy for Accord: SGLang + FastAPI + Streamlit, scale-to-zero.
 
-Deploys **two** Modal apps in one file:
+**One** Modal app (`accord`) with four entrypoints. It has to be one app, not
+two: `modal deploy <file>` resolves a single `modal.App` per file, so a second
+`App` object here would make the documented one-command deploy fail.
 
-1. **`accord`** — GPU class (`H100`, `max_containers=1`, `scaledown_window=300s`).
-   Starts SGLang serving Qwen2.5-7B-Instruct on container-enter, exposes the
-   FastAPI `/analyze` + `/health` endpoints as a Modal ASGI app on the *same*
-   container so inference calls stay on localhost. The model weights are
-   cached on a Modal Volume so cold-starts don't re-download 15 GB.
-
-2. **`accord-ui`** — CPU-only Streamlit UI, its own ASGI app. Calls the
-   `accord` API URL over HTTPS. Shipped separately so UI edits redeploy in
-   seconds without touching the GPU container.
-
-One-shot Modal functions live in the same file: `build_corpus` embeds the
-case corpus into Neon, `train_outcome` trains + saves the XGBoost artifact
-onto a shared Volume the GPU class mounts.
+1. **`AccordServer`** — GPU class (`H100`, `max_containers=1`,
+   `scaledown_window=300s`). Starts SGLang serving Qwen2.5-7B-Instruct on
+   container-enter, exposes the FastAPI `/analyze` + `/health` endpoints as a
+   Modal ASGI app on the *same* container so inference calls stay on localhost.
+   Weights are cached on a Modal Volume so cold starts don't re-download 15 GB.
+2. **`ui`** — CPU-only Streamlit web server. Calls the API over HTTPS via the
+   `ACCORD_API_URL` secret. Separate image (`cpu_image`), so UI edits don't
+   rebuild the GPU image layers.
+3. **`build_corpus`** — one-shot; embeds the case corpus into Neon.
+4. **`train_outcome`** — one-shot; trains + saves the XGBoost artifact onto the
+   artifacts Volume that `AccordServer` mounts at `/app/models`.
 
 Deploy sequence — see [RUN.md](../../RUN.md) for the full sequence including
 Neon and Langfuse setup.
@@ -25,8 +25,8 @@ Neon and Langfuse setup.
                                 LANGFUSE_HOST=https://cloud.langfuse.com
 
     modal run infra/modal/app.py::build_corpus       # one-shot, populates Neon
-    modal run infra/modal/app.py::train_outcome      # one-shot, saves outcome_model.pkl
-    modal deploy infra/modal/app.py                  # deploys `accord` + `accord-ui`
+    modal run infra/modal/app.py::train_outcome      # one-shot, saves outcome_model.joblib
+    modal deploy infra/modal/app.py                  # deploys all four entrypoints
 """
 
 from __future__ import annotations
@@ -42,7 +42,23 @@ import modal
 # Images
 # --------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _repo_root() -> Path:
+    """Repo root locally; a harmless stand-in inside a Modal container.
+
+    Modal copies this file to `/root/app.py` in the container, so
+    `Path(__file__).resolve().parents[2]` raises IndexError there — `/root`
+    has only two ancestors. The image definitions below are only *used* at
+    build time (which always happens locally), but they're module-level
+    statements, so they still execute when Modal imports this module inside
+    the container to find the function being invoked.
+    """
+    here = Path(__file__).resolve()
+    if len(here.parents) >= 3:
+        return here.parents[2]
+    return Path("/app")
+
+
+REPO_ROOT = _repo_root()
 
 # SGLang requires CUDA + a compatible torch build. Start from Modal's stock
 # CUDA image, then pip-install SGLang and every runtime dep. Repo is added
@@ -97,17 +113,34 @@ gpu_image = (
         "tokenizers|flashinfer|flashinfer-python|sgl-kernel|sglang|xgrammar)==' "
         "> /tmp/sglang-constraints.txt",
         "cat /tmp/sglang-constraints.txt",
+        # The base image ships some distro-packaged Python deps (PyJWT) with no
+        # dist-info RECORD, so pip cannot uninstall them when a dependency wants
+        # a different version — it aborts with "uninstall-no-record-file".
+        # Reinstalling under pip's control first gives them a RECORD, after
+        # which the real install can upgrade them normally.
+        "pip install --ignore-installed --no-deps PyJWT",
     )
     .pip_install(*_common_pip, extra_options="-c /tmp/sglang-constraints.txt")
-    # `results/` is excluded: the artifacts Volume mounts there at runtime, and
-    # Modal refuses to mount a Volume over a non-empty path.
+    .workdir("/app")
+    .env({"PYTHONPATH": "/app", "HF_HOME": HF_CACHE_DIR})
+    # add_local_* MUST come last. Modal forbids any build step after it — and
+    # .workdir()/.env() count as build steps. Keeping it last also means local
+    # edits don't invalidate the expensive pip layers above.
+    #
+    # `models/` and `results/` are excluded: the artifacts Volume mounts at
+    # /app/models at runtime, and Modal refuses to mount a Volume over a
+    # non-empty path. `models/outcome_model.joblib` exists locally after an
+    # eval run, so without this exclusion the mount fails and the deploy dies.
     .add_local_dir(
         str(REPO_ROOT),
         "/app",
-        ignore=["**/.venv", "**/__pycache__", "**/.git", "**/node_modules", "results", "results/**"],
+        ignore=[
+            "**/.venv", "**/__pycache__", "**/.git", "**/node_modules",
+            "models", "models/**",
+            "results", "results/**",
+            "data/raw", "data/raw/**",
+        ],
     )
-    .workdir("/app")
-    .env({"PYTHONPATH": "/app", "HF_HOME": HF_CACHE_DIR})
 )
 
 cpu_image = (
@@ -117,21 +150,34 @@ cpu_image = (
         "httpx>=0.27",
         "pydantic>=2.6,<3",
     )
-    .add_local_dir(str(REPO_ROOT / "ui"), "/app/ui")
-    .add_local_dir(str(REPO_ROOT / "data"), "/app/data")
-    .add_local_dir(str(REPO_ROOT / "analysis"), "/app/analysis")
-    .add_local_dir(str(REPO_ROOT / "rag"), "/app/rag")
-    .add_local_dir(str(REPO_ROOT / "api"), "/app/api")
     .workdir("/app")
     .env({"PYTHONPATH": "/app"})
+    # add_local_* last — see the gpu_image comment. The UI only needs its own
+    # module; it talks to the API over HTTPS, not by importing the pipeline.
+    .add_local_dir(str(REPO_ROOT / "ui"), "/app/ui")
 )
 
 corpus_image = (
     modal.Image.debian_slim(python_version="3.11")
+    # Same distro-packaged-PyJWT problem as gpu_image — see that comment.
+    .run_commands("pip install --ignore-installed --no-deps PyJWT")
     .pip_install(*_common_pip)
-    .add_local_dir(str(REPO_ROOT), "/app", ignore=["**/.venv", "**/__pycache__", "**/.git"])
     .workdir("/app")
     .env({"PYTHONPATH": "/app"})
+    # add_local_* last (Modal forbids build steps after it). Same
+    # Volume-over-non-empty-path constraint as gpu_image: `train_outcome`
+    # mounts the artifacts Volume at /app/models, so /app/models must not be
+    # baked into the image.
+    .add_local_dir(
+        str(REPO_ROOT),
+        "/app",
+        ignore=[
+            "**/.venv", "**/__pycache__", "**/.git",
+            "models", "models/**",
+            "results", "results/**",
+            "data/raw", "data/raw/**",
+        ],
+    )
 )
 
 
@@ -142,6 +188,18 @@ corpus_image = (
 # `accord` secret carries DATABASE_URL (Neon), LANGFUSE_* keys, and (optionally)
 # SGLANG_MODEL to override the default model checkpoint.
 accord_secret = modal.Secret.from_name("accord")
+
+# The UI's API URL lives in its OWN secret, deliberately.
+#
+# Modal has no `secret update` — you re-create with `--force`, which replaces
+# the WHOLE secret. When ACCORD_API_URL shared the `accord` secret, adding it
+# after the first deploy silently wiped DATABASE_URL, and /analyze started
+# failing with a DNS error on a placeholder host. Separating them means
+# updating the UI URL can never clobber the database credentials.
+#
+# It's also least-privilege: the UI container talks to the API over HTTPS and
+# never touches Postgres, so it has no reason to hold the Neon password.
+accord_ui_secret = modal.Secret.from_name("accord-ui")
 
 # HF model cache — one Volume shared by all GPU containers so the 15 GB
 # Qwen2.5-7B FP16 download happens once, not on every cold start.
@@ -185,6 +243,9 @@ class AccordServer:
 
         model = os.environ.get("SGLANG_MODEL", "Qwen/Qwen2.5-7B-Instruct")
         # SGLang launcher — --host 127.0.0.1 keeps the port container-local.
+        # stdout/stderr are inherited so SGLang's logs land in Modal's log
+        # stream. Swallowing them (DEVNULL) makes a failed cold start
+        # undiagnosable — the container just times out with no explanation.
         self._sglang = subprocess.Popen(
             [
                 "python", "-m", "sglang.launch_server",
@@ -194,13 +255,19 @@ class AccordServer:
                 # Structured-output guarantees for LangChain's .with_structured_output.
                 "--grammar-backend", "xgrammar",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
         )
 
-        # Wait for the port to accept connections (~60-90 s from a cached weights volume).
+        def _assert_alive(stage: str) -> None:
+            """Fail fast if SGLang died, instead of waiting out the full timeout."""
+            code = self._sglang.poll()
+            if code is not None:
+                raise RuntimeError(f"SGLang exited during {stage} with code {code}")
+
+        # Phase 1: wait for the port to bind. This only proves the process
+        # started — weights are typically still loading.
         deadline = time.time() + 900
         while time.time() < deadline:
+            _assert_alive("startup")
             try:
                 with socket.create_connection(("127.0.0.1", 30000), timeout=1):
                     break
@@ -209,17 +276,25 @@ class AccordServer:
         else:
             raise RuntimeError("SGLang failed to open port 30000 within 900 s")
 
-        # Confirm the HTTP layer is up before ASGI accepts traffic.
+        # Phase 2: the real readiness gate — /v1/models returns 200 only once
+        # the model is actually loaded. The `else: raise` matters: without it a
+        # backend that never comes up falls through silently and the ASGI app
+        # starts serving traffic against a dead SGLang, turning a clean startup
+        # failure into confusing per-request 500s.
         import httpx
 
-        for _ in range(60):
+        for _ in range(90):
+            _assert_alive("model load")
             try:
-                r = httpx.get("http://127.0.0.1:30000/v1/models", timeout=2.0)
-                if r.status_code == 200:
+                if httpx.get("http://127.0.0.1:30000/v1/models", timeout=2.0).status_code == 200:
                     break
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — not accepting HTTP yet
                 pass
             time.sleep(2)
+        else:
+            raise RuntimeError(
+                "SGLang bound port 30000 but /v1/models never returned 200 within 180 s"
+            )
 
         os.environ.setdefault("SGLANG_BASE_URL", "http://127.0.0.1:30000/v1")
 
@@ -292,25 +367,45 @@ def train_outcome() -> str:
     )
     from data.schema import Transcript
 
-    processed = Path("/app/data/processed/craigslist_bargain.jsonl")
+    processed = Path("/app/data/processed/casino.jsonl")
     if not processed.exists():
         raise RuntimeError(
-            f"{processed} missing — run `python -m data.ingest_craigslist --download` locally, "
+            f"{processed} missing — run `python -m data.ingest_casino --download` locally, "
             "then re-deploy so add_local_dir picks the file up."
         )
 
-    # Load transcripts and split by the source-provided split.
-    train, val = [], []
+    # Load transcripts, keeping the splits STRICTLY separate. An earlier version
+    # of this fell back to `train` for anything that wasn't "validation", which
+    # silently appended the *test* split into the training set — the deployed
+    # model was training on its own held-out data. Rows with a missing or
+    # unrecognized split are dropped rather than defaulted into training.
+    by_split = {"train": [], "validation": [], "test": []}
+    skipped = 0
     with processed.open("r", encoding="utf-8") as fh:
         for line in fh:
             if not line.strip():
                 continue
             t = Transcript.model_validate_json(line)
-            split = t.metadata.get("split", "train")
-            (train if split == "train" else val if split == "validation" else train).append(t)
+            split = t.metadata.get("split")
+            if split in by_split:
+                by_split[split].append(t)
+            else:
+                skipped += 1
+
+    train, val = by_split["train"], by_split["validation"]
+    if not train:
+        raise RuntimeError(
+            f"no rows with split='train' in {processed} "
+            f"({skipped} rows had a missing/unknown split)"
+        )
+    if not val:
+        raise RuntimeError(
+            "no rows with split='validation' — isotonic calibration needs a held-out "
+            "split, and calibrating on training data would produce a meaningless curve"
+        )
 
     X_train, y_train = build_feature_matrix(train)
-    X_val, y_val = build_feature_matrix(val or train[: max(1, len(train) // 5)])
+    X_val, y_val = build_feature_matrix(val)
 
     model = train_outcome_model(X_train, y_train)
     calibrator = calibrate(model, X_val, y_val)
@@ -325,23 +420,30 @@ def train_outcome() -> str:
 
 
 # --------------------------------------------------------------------------
-# UI app: Streamlit
+# Streamlit UI — same app, separate (CPU) image
 # --------------------------------------------------------------------------
 
-ui_app = modal.App("accord-ui")
-
-
-@ui_app.function(
+@app.function(
     image=cpu_image,
-    # `accord` secret must include `ACCORD_API_URL` — the deployed FastAPI URL.
-    # Add it after the first `modal deploy` of the `accord` app:
-    #   modal secret update accord ACCORD_API_URL=https://<workspace>--accord-accordserver-api.modal.run
-    secrets=[accord_secret],
+    # Only the UI URL — no database credentials. See accord_ui_secret above.
+    #   modal secret create accord-ui ACCORD_API_URL=https://<workspace>--accord-accordserver-api.modal.run
+    secrets=[accord_ui_secret],
     max_containers=1,
     scaledown_window=300,
-    timeout=600,
+    # Long-lived: Streamlit's /_stcore/stream websocket is a single request that
+    # stays open for the whole session, and it is killed when this timeout
+    # expires. 600 s would drop a user's UI after 10 minutes.
+    timeout=3600,
 )
-@modal.web_server(port=8501, startup_timeout=60)
+# Streamlit's frontend pulls ~60 separate JS chunks before it can hydrate
+# widgets. Without this, the container serves them near-serially: logs showed
+# `execution: ~124 ms` but `duration: 8-17 s` per chunk (pure queueing), and a
+# `GET / -> 200 OK (duration: 119.5 s)`. The page rendered its text immediately
+# and left every widget as an empty skeleton for minutes while chunks trickled
+# in. High concurrency is safe here — serving static assets is IO-bound, not
+# CPU-bound, and this container does no inference.
+@modal.concurrent(max_inputs=100)
+@modal.web_server(port=8501, startup_timeout=120)
 def ui() -> None:
     """Start Streamlit; Modal proxies HTTPS → localhost:8501 as long as traffic keeps flowing."""
     subprocess.Popen(
@@ -351,5 +453,12 @@ def ui() -> None:
             "--server.address", "0.0.0.0",
             "--server.headless", "true",
             "--browser.gatherUsageStats", "false",
+            # NOTE: --server.enableCORS=false / --server.enableXsrfProtection=false
+            # are the usual "Streamlit behind a proxy" advice and were tried here
+            # first. They are NOT needed: Modal's proxy upgrades the websocket
+            # cleanly (`CONNECT /_stcore/stream -> 101 Switching Protocols` in the
+            # logs). The empty-widget symptom was request queueing, fixed by the
+            # @modal.concurrent above — so these stay ON rather than weakening
+            # XSRF protection for a problem that never existed.
         ]
     )
