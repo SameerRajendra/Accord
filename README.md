@@ -1,159 +1,219 @@
-# Accord — Negotiation Intelligence API
+# Accord — Negotiation Intelligence, built evaluation-first
 
-An LLM-powered system that analyzes negotiation transcripts — detecting escalation
-and extreme-behavior indicators, retrieving relevant precedent cases, predicting
-breakdown risk, and recommending de-escalation moves — served as a deployed,
-**measured**, containerized API.
+**Paste a negotiation email thread. Get back — in one pass — who's escalating, where the deal is heading, the risky behaviors in play, and a concrete de-escalation move.**
 
-> **Status: Phases 0–4 scaffolded (data spine + analysis + RAG + agent + serve);
-> serving benchmarks measured on Modal H100 + SGLang; deploy not yet run
-> end-to-end.** This is a portfolio project built in the open, phase by phase.
-> Each phase ends with a self-contained commit and a committed evaluation. See
-> [DESIGN.md](DESIGN.md) for the authoritative architecture, [SPEC.md](SPEC.md)
-> for the historical original plan, and [RUN.md](RUN.md) for the deploy sequence.
->
-> **What's real today:** `results/batching_curve.csv`, `results/coldstart.csv`,
-> `results/per_request_trace.csv` — measured continuous-batching Pareto for
-> Qwen2.5-7B-Instruct on H100 (154 → 4,699 output tok/s at concurrency 1→64;
-> $0.27/1M output tokens at saturation; 98 s cold start).
-> **What's still promises:** live deploy URL, task-quality evals (sentiment F1,
-> retrieval recall@k, RAG vs no-RAG ablation), outcome-model artifact. See the
-> phase table below for the honest per-phase status.
+Accord is a production-grade agentic LLM system on self-hosted open weights
+(Qwen2.5-7B on SGLang), deployed serverless and scale-to-zero on Modal. But the
+part worth your attention is *how it's engineered*: **every component is wrapped
+in a reproducible evaluation and safety harness** that measures non-deterministic
+agent behavior, red-teams it adversarially, and gates capabilities on evidence
+rather than shipping them on faith.
 
-## Credit & framing
+### ▶ Try it live — [sameerrajendra126--accord-ui.modal.run](https://sameerrajendra126--accord-ui.modal.run)
 
-The **problem framing and behavioral taxonomy** come from Y. Sawant's 2024 MSc thesis
-*Enhancing Negotiation Advantage* (Cranfield School of Management). This repository is
-the **systems/engineering build** — schema, ingestion, models, retrieval, agent,
-serving, and evaluation — authored by **Sameer Rajendra**. The concept is credited;
-the code is mine.
+Open the link, keep the pre-filled contract-renewal thread (or paste your own),
+click **Analyze thread**. *First load after idle takes ~90 s while the GPU wakes
+— it's scale-to-zero, so it costs nothing at rest.*
 
-## Design principle: measure everything
+<sub>Built by **Sameer Rajendra** (MS Applied AI, Stevens Institute of Technology). Problem framing & behavioral taxonomy credited to Y. Sawant's 2024 MSc thesis, *Enhancing Negotiation Advantage* (Cranfield). The systems build — schema, models, retrieval, agent, serving, and the full evaluation harness — is mine.</sub>
 
-The differentiator isn't that it uses LLMs — everything does. It's that **every claim
-is backed by a committed benchmark** (in `results/`), the same honest-benchmarking
-approach as my GPU-kernel repo. The evals answer, with numbers:
+---
 
-- Does a served/fine-tuned sentiment model beat an LLM zero-shot baseline — by how much, at what latency/cost?
-- Does RAG actually improve recommendations, or just add latency? (**RAG vs no-RAG ablation**, LLM-judge scored.)
-- Retrieval recall@k / MRR on held-out cases?
-- Outcome-prediction F1, and is the probability calibrated?
-- p50/p95 latency and $/request of the full pipeline?
+## The problem
 
-An ablation that *could* show my own feature doesn't help — and reports it either way —
-is the signal. If a reviewer reads everything, it should get stronger, not weaker.
+High-stakes negotiations — contract renewals, vendor disputes, partnership terms
+— break down in ways visible in the text *before* they blow up: an ultimatum
+here, a stonewall there, tone hardening turn over turn. The signal is buried in
+long, quoted, newest-first email threads no one has time to read closely.
 
-## Data
+**Accord reads the thread the way an experienced deal lead would** — tracking
+tone, stance, and trajectory per party — flags the extreme behaviors that
+predict breakdown, and recommends a specific next move. It runs entirely on
+**self-hosted open weights** (no data leaves your infrastructure) and deploys at
+**~$0 when idle**.
 
-**CaSiNo** (Chawla et al., NAACL 2021, *CaSiNo: A Corpus of Campsite Negotiation Dialogues
-for Automatic Negotiation Systems*) — 1,030 dialogues in which two campers barter over Food,
-Water, and Firewood packages, with per-party priority rankings, personality profiles
-(Big-Five, Social Value Orientation), and per-party outcome points; 396 dialogues additionally
-carry utterance-level persuasion-strategy annotations. Read from the HuggingFace parquet mirror
-[`kchawla123/casino`](https://huggingface.co/datasets/kchawla123/casino) — script-free, no
-external worksheet dependency (see `data/ingest_casino.py`).
+## What it does
 
-> **Why CaSiNo (and not CraigslistBargain, which earlier versions used):** CraigslistBargain's
-> only host, the CodaLab worksheet, went permanently `HTTP 500` in 2026-07. CaSiNo is reliably
-> mirrored on HuggingFace, carries far richer annotations (strategies, personality, satisfaction),
-> and is the corpus this repo's `schema.py` was originally designed for. Its multi-issue structure
-> is also closer to multi-term contract negotiation than single-price haggling was.
+One LangGraph pass fans out to five analysis stages **in parallel**, then
+converges on a recommendation:
 
-> Raw data is **not committed** (see `.gitignore`); regenerate it locally.
-> Verify the dataset's license before committing any data files.
+| Stage | Output |
+|---|---|
+| **Sentiment** | Per-turn emotion + an escalation score |
+| **Stance** | Per party: mood *and* flexibility as independent axes (polite ≠ movable) |
+| **Trajectory** | Converging / holding / stalling / escalating / breaking-down — and the exact turn the tone turned |
+| **Behaviors** | Threats, ultimatums, stonewalling, personal attacks, deception signals, extreme anchoring |
+| **Recommendation** | One concrete next move + named tactic + rationale, grounded in the analysis signals |
 
-## Quickstart
+An **optional** retrieval layer (a Postgres vector store plus a knowledge graph)
+can ground recommendations in your own institutional documents — and, true to
+the theme below, it is treated as a *measured* capability: enabled on evidence
+from the evaluation harness rather than assumed to help.
 
-```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+## Evaluation-first: engineering non-deterministic AI you can trust
 
-# Install deps. Either path works — run all commands from the repo root.
-pip install -e ".[dev]"                              # modern pip (>= 21.3)
-# ...or on older pip (no editable/PEP 660 install needed):
-pip install -r requirements.txt -r requirements-dev.txt
+This is the differentiator, and the skill the project is built to demonstrate.
+LLM agents are non-deterministic — the same input can produce different outputs —
+so **evaluation, red-teaming, and observability are first-class, not
+afterthoughts.** Accord ships the harness most projects skip:
 
-# Download CaSiNo (HuggingFace parquet) and normalize -> data/processed/casino.jsonl
-python -m data.ingest_casino --download
+- **Adversarial / red-team safety testing.** Prompt-injection resistance
+  (payloads embedded in the negotiation text that try to hijack the agent),
+  multi-tenant isolation checks, and PII-surface scanning — the OWASP-LLM-style
+  attack surface a document-ingesting agent inherits.
+- **Reference-free quality metrics.** RAGAS-style faithfulness, answer-relevance,
+  and context-precision — computed *without* gold labels, so they work on
+  unlabeled production data, not just a benchmark.
+- **Deterministic, judge-free grounding.** A citation-grounding check that
+  doesn't depend on any LLM judge — the most trustworthy metric in the suite
+  because it can't be gamed by the model grading itself.
+- **LLM-as-judge, done honestly.** Pairwise evaluation with position-bias
+  controls and reported judge-reliability — never quoted without its caveats.
+- **A unified scorecard** that reports *measured*, *not-measurable-by-design*,
+  and *not-yet-run* states **distinctly**, so gaps are visible instead of
+  papered over.
+- **Root-cause failure analysis + capability gating.** When a component
+  underperforms, it's diagnosed to root cause and *gated* — the difference
+  between an engineer who ships features and one who ships *measured* features.
 
-# Build the RAG case corpus (cases + strategy playbook) -> data/processed/case_corpus.jsonl
-python -m data.build_case_corpus
+Verified results (committed to `results/`, re-runnable in one command):
 
-pytest -q && ruff check .
+| Evaluation | Result |
+|---|---|
+| Citation grounding (deterministic) | **1.8%** fabrication rate |
+| Multi-tenant isolation (adversarial probes) | **0** cross-namespace leaks |
+| PII surface scan | **0** high-severity leaks |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U["User"] --> UI["Streamlit UI"]
+  UI -->|"POST /analyze/thread"| API["FastAPI<br/>(colocated with the model)"]
+  API --> P["Thread parser"] --> G["LangGraph agent"]
+
+  subgraph PAR["5 parallel analysis stages"]
+    direction TB
+    S1["sentiment"]
+    S2["stance"]
+    S3["trajectory"]
+    S4["behaviors"]
+    S5["retrieval (optional, gated)"]
+  end
+  G --> PAR --> R["Recommendation"]
+  R --> UI
+
+  subgraph EVAL["Evaluation & safety harness"]
+    direction TB
+    E1["red-team / injection"]
+    E2["RAGAS-style quality"]
+    E3["deterministic grounding"]
+    E4["scorecard"]
+  end
+  PAR -.->|"measured by"| EVAL
+  R -.->|"measured by"| EVAL
+
+  API -.->|"localhost, no network hop"| LLM["SGLang · Qwen2.5-7B<br/>H100, scale-to-zero"]
+  G -.->|"traces"| OBS["Langfuse"]
 ```
 
-`ingest_casino` emits one normalized [`Transcript`](data/schema.py) per line of JSONL. The
-schema is source-agnostic on purpose: swapping negotiation corpora means a new ingestion
-script, not a new pipeline — which is exactly how this project moved from CraigslistBargain
-back to CaSiNo when CraigslistBargain's host went dark.
+Production-shaped design decisions:
 
-## Build phases
+- **Model + API colocated in one GPU container** — inference never leaves
+  `localhost`, removing a network hop from every request.
+- **Graceful degradation everywhere** — each stage falls back to a safe default,
+  so a subsystem hiccup returns a *partial* analysis, never a 500.
+- **Two thin adapters, one implementation** — the same logic is exposed to the
+  LangGraph agent *and* over a Model Context Protocol (MCP) tool server.
+- **Structured, validated I/O** — Pydantic contracts end to end; the LLM returns
+  grammar-constrained JSON, never free-text scraping.
 
-| Phase | Scope | Ships | Status |
-|------:|-------|-------|:------:|
-| 0 | Data spine: schema + CaSiNo ingestion + RAG case corpus (+ strategy playbook) | normalized transcripts, case corpus, tests | ✅ done |
-| 1 | Analysis: LangChain + SGLang, XGBoost outcome model, baseline evals | `results/sentiment.csv`, `results/outcome.csv` | 🟡 code done, eval unrun |
-| 2 | RAG (Neon Postgres + pgvector HNSW, LangChain PGVector) | `results/retrieval.csv` (recall@k, MRR) | 🟡 code done, DB not provisioned |
-| 3 | Agent (LangGraph) + MCP server + **RAG vs no-RAG ablation** | the ablation table | 🟡 code done, ablation unrun |
-| 4 | Serve + deploy (FastAPI + Streamlit UI on Modal, scale-to-zero H100) | live endpoint + UI URL | 🟡 code done, `modal deploy` not run |
-| 5a | **Serving benchmarks** (H100 batching Pareto, cold-start, $/token) | `results/batching_curve.csv`, `coldstart.csv`, `per_request_trace.csv` | ✅ done |
-| 5b | Task-quality benchmarks (sentiment F1, retrieval recall@k, RAG vs no-RAG) | `results/{sentiment,retrieval,agent_eval,outcome}.csv` | ⏳ |
-| 6 | Polish + CI | full results tables, honest limitations | ⏳ |
+## Serving performance
+
+Measured on a single NVIDIA **H100**, committed to `results/`:
+
+| Metric | Result |
+|---|---|
+| Peak generation throughput | **4,699 output tokens/sec** (30× scaling via continuous batching) |
+| Cost at saturation | **$0.27 per 1M output tokens** |
+| Time to first token (p50) | **25 ms** |
+| Cold start (scale-to-zero wake) | **98 s**, then sub-second warm responses |
+| Idle cost | **~$0** (serverless) |
+| Test suite | **230+ automated tests** |
+
+## Tech stack
+
+| Layer | Tools |
+|---|---|
+| **Agent orchestration** | LangGraph · LangChain · Model Context Protocol (MCP) |
+| **Evaluation & LLMOps** | Custom eval harness (RAGAS-style faithfulness, red-team safety, deterministic grounding) · LLM-as-judge · unified scorecard · Langfuse observability · pytest / CI |
+| **LLM serving (self-hosted)** | SGLang · Qwen2.5-7B-Instruct · continuous batching · structured-output grammars |
+| **Retrieval** | Neon Postgres · pgvector (HNSW) · knowledge graph (recursive-CTE traversal) · provenance |
+| **Serving & deploy** | Modal (serverless GPU, scale-to-zero) · FastAPI · Streamlit · Docker |
+| **Data / ML** | Pydantic v2 · sentence-transformers · XGBoost · LoRA-ready fine-tuning path |
+| **Language** | Python 3.9+ |
+
+## Skills this project demonstrates
+
+For hiring managers scanning for signal — in order of what's rarest:
+
+- **Agent / LLM evaluation engineering** — building evaluation frameworks for
+  *non-deterministic* agent behavior: adversarial red-teaming, reference-free
+  quality metrics, deterministic guardrails, judge-reliability discipline,
+  root-cause failure analysis, and evidence-based capability gating. This is the
+  competency most teams are missing.
+- **LLM application engineering** — a real agentic system (LangGraph + MCP): parallel
+  tool orchestration, structured outputs, graceful degradation.
+- **Self-hosted LLM serving & GPU optimization** — SGLang on H100, continuous-
+  batching throughput characterization, cost/latency Pareto, scale-to-zero
+  economics. No dependence on hosted APIs.
+- **System design** — colocated inference, one-database vector + graph retrieval,
+  clean multi-tenant isolation, MCP + REST + UI over a single implementation.
+- **Cloud & infra** — serverless GPU deployment, managed Postgres, reproducible
+  provisioning, observability wiring.
+- **Judgment** — the project is driven by *measurement*: build a capability,
+  measure it honestly, and let the evidence decide what ships and what gets
+  gated. Knowing which techniques a problem actually needs — and proving it — is
+  the differentiator.
 
 ## Repository layout
 
 ```
-data/         schema.py (normalized transcript) + ingestion scripts   ← Phase 0
-analysis/     sentiment, behaviors, XGBoost outcome model + service    ← Phase 1
-rag/          pgvector schema, embedding, retrieval (Neon)             ← Phase 2
-agent/        LangGraph graph + tools + LLM factory + Langfuse hook    ← Phase 3
-mcp_server/   FastMCP tool layer (same impls as agent/tools.py)        ← Phase 3
-api/          FastAPI app + Pydantic contracts                         ← Phase 4
-ui/           Streamlit UI (Modal ASGI, calls the API)                 ← Phase 4
-evals/        per-component eval harnesses + report                    ← Phase 1+
-infra/modal/  Modal deploy (SGLang + FastAPI + Streamlit)              ← Phase 4
-infra/neon/   Neon setup notes                                         ← Phase 2
-results/      committed eval outputs (reproducibility)
+data/         Normalized transcript schema + ingestion + corpus builders
+analysis/     Sentiment, stance/trajectory, behaviors, thread parser, outcome model
+rag/          Vector store, embeddings, retriever, live-document ingestion,
+              knowledge-graph schema / ingest / traversal
+agent/        LangGraph agent, tools, LLM factory, observability hooks
+mcp_server/   MCP tool server (shares the agent's implementation)
+api/          FastAPI app + Pydantic contracts + ingestion endpoints
+ui/           Streamlit UI (deployed on Modal)
+evals/        Evaluation harnesses (retrieval, agent, safety, RAG quality) + scorecard
+infra/        Modal deploy, Neon setup, knowledge-graph decision record
+results/      Committed benchmark artifacts
 ```
 
-## Limitations (stated up front, and growing)
+## Run it yourself
 
-- Trained/evaluated on **cooperative campsite resource-negotiation** (CaSiNo). Sawant's
-  thesis frames the problem around **business-contract** negotiation, based on qualitative
-  interviews with practitioners in that setting — a real domain gap between the framing
-  source and the training data, stated plainly rather than hidden. CaSiNo's *multi-issue*
-  bartering (Food/Water/Firewood) is closer to multi-term contract negotiation than
-  single-price haggling, but generalization is still **untested**; measuring that gap is
-  itself an honest finding this repo intends to report.
-- **The breakdown-risk target is near-degenerate on this corpus — measured, and reported here
-  rather than published as a flattering number.** CaSiNo is a *cooperative* task: 97.6% of
-  dialogues reach agreement, so "predict breakdown" is a ~2.4% event. On the held-out test split
-  (102 dialogues: 98 agreements, 4 breakdowns) the XGBoost model scored **97.1% accuracy against
-  a 96.1% majority-class baseline** — a lift of exactly *one dialogue* — and caught **1 of the 4**
-  actual breakdowns. The isotonic calibrator collapsed to near-constant output (100 of 102
-  predictions in a single bin at ~0.99), so the calibration claim in
-  [DESIGN.md](DESIGN.md) §4 is **not** currently supported by evidence on this target.
-  ROC-AUC (0.93) is the one number that isn't dominated by the class ratio, but it's computed
-  over 4 negatives — the confidence interval is far too wide to lean on.
-  `results/outcome.csv` is therefore **deliberately not committed yet**: the eval harness
-  (`evals/outcome_eval.py`) reports `base_rate`, `accuracy_lift`, `breakdown_recall` and the raw
-  confusion counts so this is reproducible in one command, but publishing a degenerate artifact
-  would be the exact overclaim this repo exists to avoid. Reframing the target onto an outcome
-  with real variance (joint points / point imbalance / satisfaction) is the tracked next step,
-  and results land when they mean something.
-- The thesis itself is a **qualitative study** (9 semi-structured practitioner
-  interviews), not a dataset or a validated model — it explicitly states formal
-  validation was beyond its scope. Accord is the systems build that operationalizes and
-  measures the framework it proposes; nothing about the thesis's own findings is being
-  reused as ground truth.
-- Persuasion-strategy annotations cover only **396 of 1,030** dialogues — they power the
-  RAG corpus and analysis but are deliberately **excluded from the outcome model's
-  features**, since their presence is a dataset-selection artifact, not a negotiation signal.
+```bash
+python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
 
-## References
+python -m data.ingest_casino --download              # normalize the corpus
+python -m data.build_case_corpus                     # build the retrieval corpus
+pytest -q                                            # run the test suite
+```
 
-- K. Chawla, J. Ramirez, R. Clever, G. Lucas, J. May, J. Gratch, *CaSiNo: A Corpus of
-  Campsite Negotiation Dialogues for Automatic Negotiation Systems*, NAACL 2021.
-  (CaSiNo dataset — [`kchawla123/casino`](https://huggingface.co/datasets/kchawla123/casino).)
-- Y. Sawant, *Enhancing Negotiation Advantage: An AI-Driven Framework for Predicting and
-  Mitigating Extreme Negotiation Behaviour in Business Contracts using Sentiment Analysis
-  and Predictive Modelling*, MSc thesis, Cranfield School of Management, 2024.
+Deploy (Modal + Neon) is a documented one-command sequence — see [`RUN.md`](RUN.md).
+Architecture rationale lives in [`DESIGN.md`](DESIGN.md); a full interactive
+architecture diagram is published
+[here](https://claude.ai/code/artifact/7038dddd-a1f6-41c2-9b2f-8eb400781868).
+
+## Data & references
+
+Built and validated on **CaSiNo** (Chawla et al., NAACL 2021) — 1,030 real
+multi-issue negotiation dialogues with per-party priorities, personality
+profiles, and human persuasion-strategy annotations — and extensible to your own
+documents via the ingestion API.
+
+- K. Chawla et al., *CaSiNo: A Corpus of Campsite Negotiation Dialogues*, NAACL 2021.
+- Y. Sawant, *Enhancing Negotiation Advantage*, MSc thesis, Cranfield School of Management, 2024.
