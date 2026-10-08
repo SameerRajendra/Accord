@@ -160,7 +160,9 @@ MANIFEST: List[Artifact] = [
         blurb="Single-gold labeling built from corpus metadata — see the module docstring for "
         "how relevance is assigned and where it is weak. `random` is the chance baseline; "
         "`tfidf` is bag-of-words on the same corpus; `summary` mode is a control, not a "
-        "quality claim.",
+        "quality claim. The `graph` and `hybrid` arms are handicapped by single-gold "
+        "scoring by construction — they return the gold's structural equivalence class, so "
+        "read `struct@k` against `struct. chance`, not recall alone.",
         renderer="retrieval",
     ),
     Artifact(
@@ -481,7 +483,18 @@ def render_retrieval(artifact: Artifact, rows: List[Dict[str, str]]) -> List[str
         grouped.setdefault(key, {})[row.get("k", "")] = row
 
     max_k = ks[-1] if ks else "?"
-    header = ["query mode / retriever", "queries", *[f"recall@{k}" for k in ks], f"MRR@{max_k}"]
+    header = [
+        "query mode / retriever",
+        "queries",
+        *[f"recall@{k}" for k in ks],
+        f"MRR@{max_k}",
+        # Recall alone is not a fair read on the graph arms — they retrieve the
+        # gold's structural equivalence class, which single-gold scoring counts
+        # as misses. Carry the structural diagnostic and its chance baseline in
+        # the same table so the two never get separated.
+        f"struct@{max_k}",
+        "struct. chance",
+    ]
     table_rows: List[Sequence[str]] = []
     for key, by_k in grouped.items():
         any_row = next(iter(by_k.values()))
@@ -490,10 +503,16 @@ def render_retrieval(artifact: Artifact, rows: List[Dict[str, str]]) -> List[str
             cells.append(format_value((by_k.get(k) or {}).get("recall_at_k"), "pct"))
         deepest = by_k.get(max_k) or {}
         cells.append(format_value(deepest.get("mrr_at_k"), "float"))
+        cells.append(format_value(deepest.get("structural_match_at_k"), "pct"))
+        cells.append(format_value(deepest.get("structural_match_baseline"), "pct"))
         table_rows.append(cells)
 
     lines = markdown_table(header, table_rows)
     notes = {row.get("labeling_note", "") for row in rows if row.get("labeling_note")}
+    # Retriever notes carry the "recall understates this arm" caveat. It has to
+    # appear under the table it qualifies, not only in the eval's source.
+    notes |= {row.get("retriever_note", "") for row in rows if row.get("retriever_note")}
+    notes.discard("")
     if notes:
         lines.append("")
         for note in sorted(notes):

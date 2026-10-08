@@ -63,10 +63,13 @@ and none of which are fixed by running more queries
 6. **"Held-out" refers to the queries, not the index.** Nothing is trained, so
    test-split documents are deliberately present in the corpus; the split only
    controls which dialogues are used as queries.
+7. **Single-gold labeling structurally disadvantages the graph retrievers**, and
+   the size of that handicap is unknown. See the next section — this is the one
+   caveat that can invert a conclusion rather than just shift a number.
 
-Baselines (reported on every row, because recall@10 over a 1,040-document
+Retrievers (all reported on every row, because recall@10 over a 1,040-document
 corpus sounds impressive until you see what chance and bag-of-words get)
------------------------------------------------------------------------
+------------------------------------------------------------------------------
 - ``random`` — analytic expectation for a uniformly random ranking with one
   relevant document: recall@k = k/N, MRR@k = (Σ_{r≤k} 1/r)/N. No queries issued.
 - ``tfidf`` — plain lexical TF-IDF cosine over the same corpus, computed locally
@@ -75,6 +78,33 @@ corpus sounds impressive until you see what chance and bag-of-words get)
   (BGE via a sibling SGLang server) is the indicated next step.
 - ``pgvector`` — the deployed path: MiniLM (384-d) + Neon HNSW via
   ``rag.retriever.retrieve``.
+- ``graph`` — knowledge-graph traversal only (``graph_retrieve(...,
+  use_vector=False)``): the query is mapped onto structural anchors — contested
+  issues, persuasion tactics, outcome class, conflict structure.
+- ``hybrid`` — graph and vector fused (``--fusion weighted --alpha 0.6`` by
+  default; ``--fusion rrf`` and an ``--alpha`` sweep are the other arms
+  ``infra/graph/README.md`` §7 asks for, reachable by flag).
+
+**Read the graph rows against the right question.** Recall@k here asks "did you
+return *this exact document*". Vector search can do that: the gold document and
+the query share surface wording, so retrieving a dialogue's own case doc is
+squarely the task. Graph retrieval cannot, structurally — it anchors on facts
+(same conflict structure, same contested issue, same outcome class) that dozens
+of dialogues share by construction, so it returns the gold document's
+*equivalence class*, and single-gold scoring counts every other member of that
+class as a miss. A low graph recall@k on this labeling is therefore expected and
+is **not** evidence that graph retrieval finds worse precedent; it is evidence
+that this labeling measures self-retrieval.
+
+That is why every row also carries ``structural_match_at_k``: of the case
+documents returned, the share whose dialogue has the *same conflict structure*
+as the query's dialogue — a proxy for "is this usable precedent" that does not
+presuppose one right answer. It is reported next to
+``structural_match_baseline``, the rate a uniformly random draw would get given
+how common that structure is in the corpus, because on a corpus where one
+structure dominates a high match rate means nothing on its own. Neither number
+is a relevance judgement; both are cheap, deterministic, and honest about what
+they are.
 
 Outputs
 -------
@@ -88,6 +118,8 @@ Usage::
     python -m evals.retrieval_eval --offline             # tfidf + random only, no Neon
     python -m evals.retrieval_eval --query-mode dialogue --k 1 5 20
     python -m evals.retrieval_eval --split all --max-queries 500
+    python -m evals.retrieval_eval --retriever pgvector graph hybrid --fusion rrf
+    python -m evals.retrieval_eval --retriever hybrid --alpha 0.25   # alpha sweep
 """
 
 from __future__ import annotations
@@ -96,7 +128,7 @@ import argparse
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from data.ingest_casino import STRATEGY_VOCAB
 from data.schema import CaseDocument, Transcript
@@ -116,9 +148,14 @@ from evals._common import (
     text_turns,
     write_csv,
 )
+from rag.graph_schema import STRUCT_UNKNOWN, conflict_structure
 
 QUERY_MODES = ("dialogue", "summary", "strategy")
-RETRIEVERS = ("pgvector", "tfidf", "random")
+RETRIEVERS = ("pgvector", "graph", "hybrid", "tfidf", "random")
+#: Retrievers that need a populated knowledge graph, not just the vector store.
+GRAPH_RETRIEVERS = ("graph", "hybrid")
+#: Retrievers that need Neon at all (as opposed to running purely locally).
+DATABASE_RETRIEVERS = ("pgvector",) + GRAPH_RETRIEVERS
 DEFAULT_KS = (1, 3, 5, 10)
 
 _MODE_NOTES = {
@@ -129,6 +166,22 @@ _MODE_NOTES = {
     "strategy": "human-annotated single-strategy utterance -> that strategy's playbook doc",
 }
 
+#: Carried into every row so a reader of the CSV alone cannot mistake a low
+#: graph recall for a quality verdict. The caveat has to travel with the
+#: number, not live only in this module's docstring.
+_GRAPH_CAVEAT = (
+    "single-gold recall UNDERSTATES this arm by construction: graph anchors retrieve the "
+    "gold document's structural equivalence class, and every member but the gold scores as "
+    "a miss — read structural_match_at_k vs structural_match_baseline alongside it"
+)
+_RETRIEVER_NOTES = {
+    "pgvector": "deployed path: MiniLM 384-d + Neon HNSW cosine",
+    "graph": "graph traversal only (use_vector=False). " + _GRAPH_CAVEAT,
+    "hybrid": "graph + vector fused. " + _GRAPH_CAVEAT,
+    "tfidf": "lexical bag-of-words reference point, stock TfidfVectorizer, no database",
+    "random": "analytic expectation, no queries issued",
+}
+
 
 @dataclass
 class Query:
@@ -137,6 +190,10 @@ class Query:
     query_id: str
     text: str
     gold_case_id: str
+    structure: Optional[str] = None
+    """Conflict structure of the dialogue this query came from, when it came
+    from one. Powers `structural_match_at_k`, the diagnostic that reads graph
+    retrieval on its own terms instead of only through single-gold recall."""
 
 
 @dataclass
@@ -153,6 +210,95 @@ class Ranking:
             if case_id == self.query.gold_case_id:
                 return position
         return None
+
+
+# --------------------------------------------------------------------------
+# Structural diagnostic
+# --------------------------------------------------------------------------
+#
+# Single-gold recall asks "did you return this exact document". That is the
+# vector retriever's task by construction and not the graph retriever's, so a
+# head-to-head on recall alone would answer a question only one of the two is
+# playing. These three helpers add a second reading that does not presuppose
+# one right answer: of the cases returned, how many stand in the same
+# structural relation as the query's dialogue — and how many would a random
+# draw have got, given how common that structure is.
+
+
+def transcript_structure(transcript: Transcript) -> Optional[str]:
+    """The dialogue's conflict structure, or None when it isn't derivable.
+
+    Uses `rag.graph_schema.conflict_structure` — the same function the graph
+    ingest and the query planner use, so this diagnostic cannot drift into
+    measuring a different notion of "same structure" than the retriever does.
+    """
+    parties = list(transcript.parties)
+    if len(parties) != 2:
+        return None
+    structure = conflict_structure(parties[0].priorities, parties[1].priorities)
+    return None if structure == STRUCT_UNKNOWN else structure
+
+
+def structure_index(transcripts: Sequence[Transcript]) -> Dict[str, str]:
+    """case_id -> conflict structure, for every dialogue with a derivable one.
+
+    Keyed the way `build_queries` keys gold ids (`source-dialogue_id`), which
+    is also how `data/build_case_corpus.py` composes `case_id` — including its
+    doubled `casino-casino-N` form. Consistency with the corpus matters more
+    than tidiness here; see infra/graph/README.md §6.
+    """
+    index: Dict[str, str] = {}
+    for transcript in transcripts:
+        structure = transcript_structure(transcript)
+        if structure is not None:
+            index[f"{transcript.source}-{transcript.dialogue_id}"] = structure
+    return index
+
+
+def structural_match(
+    rankings: Sequence[Ranking], structures: Dict[str, str], k: int
+) -> Dict[str, Any]:
+    """Share of returned cases sharing the query dialogue's conflict structure.
+
+    Playbook documents and any case whose structure is unknown are dropped
+    from the denominator rather than counted as misses — they are not wrong
+    answers, they are answers this diagnostic cannot judge. A query whose
+    whole top-k is undecidable is excluded and counted in `n_scored`, so a
+    thin denominator is visible instead of inflating the mean.
+
+    `baseline` is what a uniform random draw would score: the corpus-wide
+    prevalence of each query's own structure, averaged over queries. On a
+    corpus where one structure dominates, the match rate alone means nothing.
+    """
+    if not structures:
+        return {"match": None, "baseline": None, "n_scored": 0}
+
+    prevalence: Dict[str, float] = {}
+    total = float(len(structures))
+    for structure in structures.values():
+        prevalence[structure] = prevalence.get(structure, 0.0) + 1.0
+    for structure in prevalence:
+        prevalence[structure] /= total
+
+    shares: List[float] = []
+    baselines: List[float] = []
+    for ranking in rankings:
+        if ranking.query.structure is None:
+            continue
+        judged = [
+            structures[case_id]
+            for case_id in ranking.case_ids[:k]
+            if case_id in structures
+        ]
+        if not judged:
+            continue
+        matches = sum(1 for s in judged if s == ranking.query.structure)
+        shares.append(matches / len(judged))
+        baselines.append(prevalence.get(ranking.query.structure, 0.0))
+
+    if not shares:
+        return {"match": None, "baseline": None, "n_scored": 0}
+    return {"match": mean(shares), "baseline": mean(baselines), "n_scored": len(shares)}
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +355,12 @@ def build_queries(
             else:
                 text = document.text
             queries.append(
-                Query(query_id=transcript.dialogue_id, text=text, gold_case_id=gold_id)
+                Query(
+                    query_id=transcript.dialogue_id,
+                    text=text,
+                    gold_case_id=gold_id,
+                    structure=transcript_structure(transcript),
+                )
             )
 
     elif mode == "strategy":
@@ -256,6 +407,49 @@ def rank_with_pgvector(queries: Sequence[Query], max_k: int) -> List[Ranking]:
     rankings: List[Ranking] = []
     for query in queries:
         hits = retrieve(query.text, k=max_k)
+        rankings.append(
+            Ranking(
+                query=query,
+                case_ids=[h.case_id for h in hits],
+                scores=[float(h.score) for h in hits],
+            )
+        )
+    return rankings
+
+
+def rank_with_graph(
+    queries: Sequence[Query],
+    max_k: int,
+    use_vector: bool,
+    fusion: str,
+    alpha: float,
+) -> List[Ranking]:
+    """Graph traversal, optionally fused with vector similarity.
+
+    Deliberately calls `graph_retrieve` on the query *text*, not
+    `graph_retrieve_for_transcript`, even though the transcript is available
+    here: the agent's transcript-anchored path (`agent/tools.py`) is a
+    different retriever with strictly more information, and scoring it against
+    the text arms would compare two different tasks. Benchmarking that path is
+    its own experiment — it belongs with the agent eval, which has the
+    transcript in hand for a live case.
+
+    `graph_retrieve` degrades to vector-only rather than raising if the graph
+    is unreachable (infra/graph/README.md §6), which is why `run_eval` probes
+    `graph_is_populated()` up front: a silently degraded graph arm here would
+    publish a benchmark of the vector retriever under the graph's name.
+    """
+    from rag.graph_retriever import graph_retrieve
+
+    rankings: List[Ranking] = []
+    for query in queries:
+        hits = graph_retrieve(
+            query.text,
+            k=max_k,
+            use_vector=use_vector,
+            fusion=fusion,
+            alpha=alpha,
+        )
         rankings.append(
             Ranking(
                 query=query,
@@ -354,6 +548,39 @@ def _rank_stats(rankings: Sequence[Ranking]) -> Dict[str, float]:
 # --------------------------------------------------------------------------
 
 
+def preflight_graph() -> Dict[str, object]:
+    """Refuse to run a graph arm against a graph that isn't there.
+
+    `graph_retrieve` catches its own failures and returns the vector result
+    (infra/graph/README.md §6) — correct for serving, disastrous for a
+    benchmark: the graph rows would be the vector retriever wearing the
+    graph's name, and nothing in the output would say so.
+    """
+    from rag.graph_db import graph_is_populated
+
+    try:
+        populated = graph_is_populated()
+    except Exception as exc:  # noqa: BLE001 — driver / DSN / missing tables
+        raise EvalUnavailable(
+            f"Could not query the knowledge-graph tables ({type(exc).__name__}: {exc}).\n"
+            f"The graph arms need them loaded in the same database as the vector store:\n"
+            f"  psql \"$DATABASE_URL\" -f rag/graph_schema.sql\n"
+            f"  python -m rag.graph_ingest --dry-run   # verify cases_unmatched == 0 first\n"
+            f"  python -m rag.graph_ingest\n"
+            f"Or drop the graph arms: --retriever pgvector tfidf random"
+        ) from exc
+
+    if not populated:
+        raise EvalUnavailable(
+            "The knowledge-graph tables exist but are empty, so a graph arm would silently "
+            "measure the vector retriever instead.\n"
+            "  python -m rag.graph_ingest --dry-run   # check cases_unmatched == 0\n"
+            "  python -m rag.graph_ingest\n"
+            "Or drop the graph arms: --retriever pgvector tfidf random"
+        )
+    return {"graph_populated": True}
+
+
 def run_eval(
     transcripts_path: Path,
     corpus_path: Path,
@@ -365,17 +592,25 @@ def run_eval(
     limit: int,
     max_queries: int,
     seed: int,
+    fusion: str = "weighted",
+    alpha: float = 0.6,
 ) -> dict:
     corpus = load_corpus(corpus_path)
     corpus_by_id = {d.case_id: d for d in corpus}
     corpus_size = len(corpus)
     all_transcripts = load_transcripts(transcripts_path)
     max_k = max(ks)
+    # Built over ALL transcripts, not the query pool: the diagnostic asks about
+    # the documents that came back, which are drawn from the whole corpus.
+    structures = structure_index(all_transcripts)
 
     probe: Optional[dict] = None
-    if "pgvector" in retrievers:
+    graph_probe: Optional[dict] = None
+    if any(r in DATABASE_RETRIEVERS for r in retrievers):
         # Fail here, with instructions, rather than mid-loop with a driver traceback.
         probe = preflight_retrieval()
+    if any(r in GRAPH_RETRIEVERS for r in retrievers):
+        graph_probe = preflight_graph()
 
     summary_rows: List[List[object]] = []
     per_query_rows: List[List[object]] = []
@@ -400,6 +635,9 @@ def run_eval(
 
         mode_result: Dict[str, dict] = {}
         for retriever in retrievers:
+            structural: Dict[int, Dict[str, Any]] = {
+                k: {"match": None, "baseline": None, "n_scored": 0} for k in ks
+            }
             if retriever == "random":
                 stats = {
                     "mean_top1_score": None,
@@ -413,10 +651,19 @@ def run_eval(
             else:
                 if retriever == "pgvector":
                     rankings = rank_with_pgvector(queries, max_k)
+                elif retriever in GRAPH_RETRIEVERS:
+                    rankings = rank_with_graph(
+                        queries,
+                        max_k,
+                        use_vector=(retriever == "hybrid"),
+                        fusion=fusion,
+                        alpha=alpha,
+                    )
                 else:
                     rankings = rank_with_tfidf(queries, corpus, max_k)
                 stats = _rank_stats(rankings)
                 scored = {k: score_rankings(rankings, k) for k in ks}
+                structural = {k: structural_match(rankings, structures, k) for k in ks}
                 for ranking in rankings:
                     rank = ranking.gold_rank()
                     per_query_rows.append(
@@ -449,12 +696,18 @@ def run_eval(
                         random_recall,
                         random_mrr,
                         (recall - random_recall) if not math.isnan(recall) else None,
+                        structural[k]["match"],
+                        structural[k]["baseline"],
+                        structural[k]["n_scored"] or None,
                         stats["mean_top1_score"],
                         stats["mean_gold_score_when_found"],
                         stats["mean_gold_rank_when_found"],
                         stats["found_rate_within_max_k"],
+                        fusion if retriever in GRAPH_RETRIEVERS else None,
+                        alpha if retriever in GRAPH_RETRIEVERS else None,
                         skipped,
                         _MODE_NOTES.get(mode, ""),
+                        _RETRIEVER_NOTES.get(retriever, ""),
                     ]
                 )
             mode_result[retriever] = {
@@ -462,8 +715,19 @@ def run_eval(
             }
             mode_result[retriever].update({f"mrr@{k}": scored[k]["mrr"] for k in ks})
             mode_result[retriever].update(
+                {
+                    f"structural_match@{k}": structural[k]["match"]
+                    for k in ks
+                    if structural[k]["match"] is not None
+                }
+            )
+            mode_result[retriever].update(
                 {key: value for key, value in stats.items() if value is not None}
             )
+            if retriever in GRAPH_RETRIEVERS:
+                mode_result[retriever]["fusion"] = fusion
+                mode_result[retriever]["alpha"] = alpha
+                mode_result[retriever]["note"] = _RETRIEVER_NOTES[retriever]
 
         modes_summary[mode] = {
             "n_queries": len(queries),
@@ -485,12 +749,18 @@ def run_eval(
             "random_recall_at_k",
             "random_mrr_at_k",
             "recall_lift_over_random",
+            "structural_match_at_k",
+            "structural_match_baseline",
+            "structural_match_n_queries",
             "mean_top1_score",
             "mean_gold_score_when_found",
             "mean_gold_rank_when_found",
             "found_rate_within_max_k",
+            "fusion",
+            "alpha",
             "queries_skipped_missing_gold",
             "labeling_note",
+            "retriever_note",
         ],
         summary_rows,
     )
@@ -509,7 +779,7 @@ def run_eval(
         per_query_rows,
     )
 
-    return {
+    out = {
         "corpus": str(corpus_path),
         "corpus_size": corpus_size,
         "split": split,
@@ -527,6 +797,18 @@ def run_eval(
             "templated corpus compresses similarity scores; trust rank, not absolute score",
         ],
     }
+    if graph_probe is not None:
+        out["graph_probe"] = graph_probe
+        out["fusion"] = fusion
+        out["alpha"] = alpha
+        out["labeling_caveats"].append(
+            "single-gold recall structurally understates the graph arms: they retrieve the "
+            "gold document's equivalence class (same structure / issue / outcome), and every "
+            "member of it other than the gold itself scores as a miss. Read "
+            "structural_match_at_k against structural_match_baseline alongside recall, and do "
+            "not report 'graph is worse than vector' from recall alone."
+        )
+    return out
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -567,18 +849,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--fusion",
+        choices=("weighted", "rrf"),
+        default="weighted",
+        help="Graph/vector fusion for the graph arms. 'rrf' ignores score magnitudes, which "
+        "this corpus's narrow 0.42-0.44 similarity band argues for — unmeasured either way.",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.6,
+        help="Graph's share of the hybrid blend (1.0 = graph only, 0.0 = vector only). Note "
+        "alpha=0.0 is NOT the pgvector baseline — the candidate pool is still the union of "
+        "both lists. Compare against the pgvector row directly.",
+    )
+    parser.add_argument(
         "--offline",
         action="store_true",
-        help="Skip pgvector — run only the tfidf and random baselines (no DATABASE_URL needed).",
+        help="Skip every retriever that needs Neon (pgvector, graph, hybrid) — run only the "
+        "tfidf and random baselines, no DATABASE_URL needed.",
     )
     args = parser.parse_args(argv)
 
-    retrievers = [r for r in args.retriever if not (args.offline and r == "pgvector")]
+    retrievers = [
+        r for r in args.retriever if not (args.offline and r in DATABASE_RETRIEVERS)
+    ]
     if not retrievers:
         parser.error("--offline removed every selected retriever; add --retriever tfidf random")
     ks = sorted({k for k in args.k if k > 0})
     if not ks:
         parser.error("--k needs at least one positive value")
+    if not 0.0 <= args.alpha <= 1.0:
+        parser.error("--alpha must be in [0, 1]")
 
     try:
         summary = run_eval(
@@ -592,6 +894,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             limit=args.limit,
             max_queries=args.max_queries,
             seed=args.seed,
+            fusion=args.fusion,
+            alpha=args.alpha,
         )
     except EvalUnavailable as exc:
         return fail(exc)

@@ -420,6 +420,269 @@ def train_outcome() -> str:
 
 
 # --------------------------------------------------------------------------
+# One-shot: load the knowledge graph into Neon
+# --------------------------------------------------------------------------
+
+
+@app.function(image=corpus_image, secrets=[accord_secret], timeout=600)
+def seed_demo(namespace: str = "demo") -> dict:
+    """Ingest the in-domain demo knowledge base so the public demo grounds well.
+
+    Business-negotiation precedents + playbook rules that overlap the UI's
+    default MSA-renewal thread, so a recruiter sees relevant precedent with
+    provenance instead of campsite cross-domain hits. Synthetic demo data, in a
+    live namespace — never the frozen benchmark corpus. Run once after deploy.
+    """
+    from data.demo_seed import seed
+
+    result = seed(namespace)
+    print(f"[accord] seeded demo namespace: {result}")
+    return result
+
+
+@app.function(image=corpus_image, secrets=[accord_secret], timeout=1800)
+def graph_ingest(min_cooccurrence: int = 5) -> dict:
+    """Build and load the knowledge graph into the SAME Neon as the vector store.
+
+    Prerequisite for the `graph`/`hybrid` retrieval arms and their eval. Reuses
+    `DATABASE_URL` from the `accord` secret — no new secret, no new service (the
+    graph is two relational tables in Neon; see infra/graph/README.md). Applies
+    the DDL, truncates, and loads nodes+edges in ONE transaction.
+    """
+    from rag.graph_ingest import build_graph, load_cases, load_graph, load_transcripts
+
+    build = build_graph(
+        load_transcripts(Path("/app/data/processed/casino.jsonl")),
+        load_cases(Path("/app/data/processed/case_corpus.jsonl")),
+        min_cooccurrence=min_cooccurrence,
+    )
+    result = load_graph(build)
+    print(f"[accord] loaded graph: {result}")
+    return result
+
+
+# --------------------------------------------------------------------------
+# Evals on Modal — reproduce the committed numbers on rented GPU/CPU
+# --------------------------------------------------------------------------
+#
+# Each wraps the eval's own `main(argv)`, which prints its JSON summary to
+# stdout (captured in `modal run` output — that is where the résumé numbers
+# are) and writes CSVs. Results go to the artifacts Volume under
+# `/app/models/results` so they survive the container; pull them with:
+#
+#     modal volume get accord-artifacts results ./results
+#
+# The two LLM evals boot SGLang in-container first, because the deployed
+# server's SGLang is bound to localhost and is not reachable from a separate
+# function. This mirrors AccordServer.start_sglang's two-phase readiness gate;
+# it is duplicated rather than shared so the proven server lifecycle is left
+# untouched.
+
+_MODAL_RESULTS_DIR = "/app/models/results"
+
+
+def _boot_sglang_blocking() -> subprocess.Popen:
+    """Launch SGLang on 127.0.0.1:30000 for a one-shot job; block until ready.
+
+    Returns the process so the caller can terminate it in a `finally`. Raises
+    if SGLang dies or never becomes ready, rather than letting an eval run
+    against a dead backend and report confusing per-call failures.
+    """
+    import socket
+
+    import httpx
+
+    model = os.environ.get("SGLANG_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+    proc = subprocess.Popen(
+        [
+            "python", "-m", "sglang.launch_server",
+            "--model-path", model,
+            "--host", "127.0.0.1",
+            "--port", "30000",
+            "--grammar-backend", "xgrammar",
+        ],
+    )
+
+    def _assert_alive(stage: str) -> None:
+        code = proc.poll()
+        if code is not None:
+            raise RuntimeError(f"SGLang exited during {stage} with code {code}")
+
+    deadline = time.time() + 900
+    while time.time() < deadline:
+        _assert_alive("startup")
+        try:
+            with socket.create_connection(("127.0.0.1", 30000), timeout=1):
+                break
+        except OSError:
+            time.sleep(1)
+    else:
+        proc.terminate()
+        raise RuntimeError("SGLang failed to open port 30000 within 900 s")
+
+    for _ in range(90):
+        _assert_alive("model load")
+        try:
+            if httpx.get("http://127.0.0.1:30000/v1/models", timeout=2.0).status_code == 200:
+                break
+        except Exception:  # noqa: BLE001 — not accepting HTTP yet
+            pass
+        time.sleep(2)
+    else:
+        proc.terminate()
+        raise RuntimeError("SGLang bound port 30000 but /v1/models never returned 200 within 180 s")
+
+    os.environ.setdefault("SGLANG_BASE_URL", "http://127.0.0.1:30000/v1")
+    return proc
+
+
+def _run_eval_main(module_main, argv: list) -> str:
+    """Call an eval's `main(argv)` with the results dir pinned to the Volume."""
+    argv = list(argv) + ["--results-dir", _MODAL_RESULTS_DIR]
+    code = module_main(argv)
+    artifacts_volume.commit()
+    print(f"[accord] eval exit code {code}; results committed to accord-artifacts/results")
+    return _MODAL_RESULTS_DIR
+
+
+@app.function(
+    image=corpus_image,
+    secrets=[accord_secret],
+    volumes={"/app/models": artifacts_volume},
+    timeout=1800,
+)
+def eval_retrieval(retrievers: str = "pgvector graph hybrid tfidf random") -> str:
+    """Retrieval recall@k / MRR (+ structural-match) — no GPU, Neon only.
+
+    `retrievers` is a space-separated subset. Drop `graph hybrid` if the graph
+    isn't loaded yet (run `graph_ingest` first) — this refuses to run a graph
+    arm against an empty graph rather than silently scoring the vector one.
+    """
+    from evals.retrieval_eval import main
+
+    return _run_eval_main(main, ["--retriever", *retrievers.split()])
+
+
+@app.function(
+    image=corpus_image,
+    volumes={"/app/models": artifacts_volume},
+    timeout=1800,
+)
+def eval_outcome() -> str:
+    """XGBoost outcome model — CPU only. Also (re)writes the model artifact.
+
+    Honest by construction: reports base_rate / accuracy_lift / breakdown_recall
+    so the near-degenerate target can't hide behind a high raw accuracy.
+    """
+    from evals.outcome_eval import main
+
+    return _run_eval_main(main, [])
+
+
+@app.function(
+    image=gpu_image,
+    gpu="H100",
+    secrets=[accord_secret],
+    volumes={HF_CACHE_DIR: hf_cache, "/app/models": artifacts_volume},
+    timeout=3600,
+)
+def eval_sentiment(limit: int = 40, split: str = "test") -> str:
+    """Sentiment F1 vs baseline — boots SGLang in-container, then scores."""
+    from evals.sentiment_eval import main
+
+    proc = _boot_sglang_blocking()
+    try:
+        return _run_eval_main(main, ["--limit", str(limit), "--split", split])
+    finally:
+        proc.terminate()
+
+
+@app.function(
+    image=gpu_image,
+    gpu="H100",
+    secrets=[accord_secret],
+    volumes={HF_CACHE_DIR: hf_cache, "/app/models": artifacts_volume},
+    timeout=5400,
+)
+def eval_agent(limit: int = 20, split: str = "test") -> str:
+    """RAG-vs-no-RAG ablation + citation grounding — SGLang + Neon.
+
+    The signature experiment: ~140–180 LLM calls at --limit 20; budget tens of
+    minutes on a warm H100 on top of cold start + SGLang boot.
+    """
+    from evals.agent_eval import main
+
+    proc = _boot_sglang_blocking()
+    try:
+        return _run_eval_main(main, ["--limit", str(limit), "--split", split])
+    finally:
+        proc.terminate()
+
+
+@app.function(
+    image=gpu_image,
+    gpu="H100",
+    secrets=[accord_secret],
+    volumes={HF_CACHE_DIR: hf_cache, "/app/models": artifacts_volume},
+    timeout=5400,
+)
+def eval_rag_triad(limit: int = 10, arms: str = "vector graph hybrid", namespace: str = "") -> str:
+    """Reference-free RAG triad (faithfulness / relevance / context-precision).
+
+    `namespace` scores the LIVE path (a user's ingested docs) — the whole point
+    of reference-free metrics. Empty = the CaSiNo benchmark. For a trustworthy
+    judge pass `--judge-model` by editing the argv below to a bigger model.
+    """
+    from evals.rag_triad_eval import main
+
+    argv = ["--limit", str(limit), "--arms", *arms.split()]
+    if namespace:
+        argv += ["--namespace", namespace]
+    proc = _boot_sglang_blocking()
+    try:
+        return _run_eval_main(main, argv)
+    finally:
+        proc.terminate()
+
+
+@app.function(
+    image=gpu_image,
+    gpu="H100",
+    secrets=[accord_secret],
+    volumes={HF_CACHE_DIR: hf_cache, "/app/models": artifacts_volume},
+    timeout=3600,
+)
+def eval_safety(checks: str = "injection isolation pii") -> str:
+    """Safety suite. `injection` needs SGLang (booted here); isolation/pii don't.
+
+    Run just the cheap deterministic subset without a GPU by calling
+    `eval_safety_nogpu` instead.
+    """
+    from evals.safety_eval import main
+
+    want = checks.split()
+    proc = _boot_sglang_blocking() if "injection" in want else None
+    try:
+        return _run_eval_main(main, ["--checks", *want])
+    finally:
+        if proc is not None:
+            proc.terminate()
+
+
+@app.function(
+    image=corpus_image,
+    secrets=[accord_secret],
+    volumes={"/app/models": artifacts_volume},
+    timeout=900,
+)
+def eval_safety_nogpu(checks: str = "isolation pii") -> str:
+    """Deterministic safety checks (tenant isolation + PII) — Neon only, no GPU."""
+    from evals.safety_eval import main
+
+    return _run_eval_main(main, ["--checks", *checks.split()])
+
+
+# --------------------------------------------------------------------------
 # Streamlit UI — same app, separate (CPU) image
 # --------------------------------------------------------------------------
 

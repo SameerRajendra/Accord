@@ -273,7 +273,11 @@ async def _run_level(
                 # Unique prefix per request. With one shared prompt, SGLang's
                 # RadixAttention serves every request from the prefix cache and
                 # the curve measures the cached path, not realistic traffic.
-                p = f"[req {i:05d}] " + _make_prompt(in_tokens) if unique_prompts else _make_prompt(in_tokens)
+                p = (
+                    f"[req {i:05d}] " + _make_prompt(in_tokens)
+                    if unique_prompts
+                    else _make_prompt(in_tokens)
+                )
                 r = await _one_request(client, model, p, out_tokens, ignore_eos)
                 r["index"] = i
                 r["start_offset_s"] = round(started, 4)

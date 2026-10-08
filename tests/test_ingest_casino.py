@@ -20,11 +20,23 @@ from data.schema import Action
 def _raw_dialogue():
     return {
         "chat_logs": [
-            {"text": "Hi! Let's work out a deal.", "task_data": {"data": "", "issue2youget": {}, "issue2theyget": {}}, "id": "mturk_agent_1"},
-            {"text": "I need firewood for my dog.", "task_data": {"data": ""}, "id": "mturk_agent_2"},
+            {
+                "text": "Hi! Let's work out a deal.",
+                "task_data": {"data": "", "issue2youget": {}, "issue2theyget": {}},
+                "id": "mturk_agent_1",
+            },
+            {
+                "text": "I need firewood for my dog.",
+                "task_data": {"data": ""},
+                "id": "mturk_agent_2",
+            },
             {
                 "text": "Submit-Deal",
-                "task_data": {"data": "", "issue2youget": {"Firewood": "3", "Food": "1", "Water": "0"}, "issue2theyget": {"Firewood": "0", "Food": "2", "Water": "3"}},
+                "task_data": {
+                    "data": "",
+                    "issue2youget": {"Firewood": "3", "Food": "1", "Water": "0"},
+                    "issue2theyget": {"Firewood": "0", "Food": "2", "Water": "3"},
+                },
                 "id": "mturk_agent_1",
             },
             {"text": "Accept-Deal", "task_data": {"data": "accept_deal"}, "id": "mturk_agent_2"},
@@ -33,14 +45,22 @@ def _raw_dialogue():
             "mturk_agent_1": {
                 "value2issue": {"Low": "Water", "Medium": "Food", "High": "Firewood"},
                 "value2reason": {"High": "cold nights"},
-                "outcomes": {"points_scored": 19, "satisfaction": "Slightly satisfied", "opponent_likeness": "Slightly like"},
+                "outcomes": {
+                    "points_scored": 19,
+                    "satisfaction": "Slightly satisfied",
+                    "opponent_likeness": "Slightly like",
+                },
                 "demographics": {"age": 43, "gender": "male"},
                 "personality": {"svo": "proself", "big-five": {"agreeableness": 6.0}},
             },
             "mturk_agent_2": {
                 "value2issue": {"Low": "Food", "Medium": "Water", "High": "Firewood"},
                 "value2reason": {"High": "fleas"},
-                "outcomes": {"points_scored": 18, "satisfaction": "Extremely satisfied", "opponent_likeness": "Extremely like"},
+                "outcomes": {
+                    "points_scored": 18,
+                    "satisfaction": "Extremely satisfied",
+                    "opponent_likeness": "Extremely like",
+                },
                 "demographics": {"age": 22, "gender": "female"},
                 "personality": {"svo": "proself", "big-five": {"agreeableness": 6.0}},
             },

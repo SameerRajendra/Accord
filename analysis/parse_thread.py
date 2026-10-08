@@ -109,6 +109,32 @@ def _looks_like_transcript_line(line: str) -> bool:
     return bool(re.match(r"^\s*[\w][\w .'-]{0,40}\s*:\s+\S", line))
 
 
+# Email header field names. These share the exact `Word: text` shape of a
+# `Speaker: message` transcript line, so without this guard the deterministic
+# fast path grabs "From"/"Sent"/"To"/"Subject" as the *speakers* of an email
+# thread and never lets the LLM extract the real sender names. That is the bug
+# behind a stance panel showing parties named "From", "Sent", "To", "Subject".
+_EMAIL_HEADER_RE = re.compile(
+    r"^\s*>*\s*(from|to|cc|bcc|sent|date|subject|reply-to)\s*:", re.IGNORECASE
+)
+
+
+def _looks_like_email_thread(text: str) -> bool:
+    """Two or more distinct email-header fields => an email thread, not a transcript.
+
+    Routes such input to the LLM parser, which knows to reverse newest-first
+    order, drop quoted history, and normalise sender names — none of which the
+    fast path does. One stray `Subject:` in a real transcript is tolerated; it
+    takes two different header fields to trip this.
+    """
+    fields = set()
+    for line in text.splitlines():
+        match = _EMAIL_HEADER_RE.match(line)
+        if match:
+            fields.add(match.group(1).lower())
+    return len(fields) >= 2
+
+
 def _parse_plain_transcript(text: str) -> List[ParsedTurn]:
     """Fast path for `Speaker: message` transcripts — no LLM call needed.
 
@@ -178,10 +204,14 @@ def parse_thread(text: str, dialogue_id: str = "thread-1") -> Transcript:
             "Paste the relevant portion of the exchange."
         )
 
-    plain = _parse_plain_transcript(text)
-    if len(plain) >= 2 and len({t.speaker for t in plain}) >= 2:
-        logger.info("Parsed %d turns via the plain-transcript fast path", len(plain))
-        return _to_transcript(plain, dialogue_id, subject=None)
+    # An email thread has header lines that look exactly like transcript turns
+    # ("From: ...", "To: ..."), so the fast path must not touch it — the LLM
+    # parser is the one that extracts real senders and strips headers/quotes.
+    if not _looks_like_email_thread(text):
+        plain = _parse_plain_transcript(text)
+        if len(plain) >= 2 and len({t.speaker for t in plain}) >= 2:
+            logger.info("Parsed %d turns via the plain-transcript fast path", len(plain))
+            return _to_transcript(plain, dialogue_id, subject=None)
 
     model = chat_model(temperature=0.0, max_tokens=2048).with_structured_output(ParsedThread)
     try:

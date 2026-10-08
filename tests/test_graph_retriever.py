@@ -187,7 +187,7 @@ def _graph_case(case_id, graph_score, rank) -> GraphRetrievedCase:
         case_id=case_id,
         source="casino",
         kind="case",
-        text="graph text for {}".format(case_id),
+        text=f"graph text for {case_id}",
         score=0.0,
         metadata={"dialogue_id": case_id},
         graph_score=graph_score,
@@ -198,7 +198,7 @@ def _graph_case(case_id, graph_score, rank) -> GraphRetrievedCase:
                 anchor_id="strategy:uv-part",
                 anchor_label="uv-part",
                 contribution=graph_score,
-                detail={"party_id": "party:{}:agent_1".format(case_id), "count": 2},
+                detail={"party_id": f"party:{case_id}:agent_1", "count": 2},
             )
         ],
         matched_by=["agent_1 used strategy 'uv-part' x2"],
@@ -210,7 +210,7 @@ def _vector_case(case_id, score) -> RetrievedCase:
         case_id=case_id,
         source="casino",
         kind="case",
-        text="vector text for {}".format(case_id),
+        text=f"vector text for {case_id}",
         score=score,
         metadata={"dialogue_id": case_id},
     )

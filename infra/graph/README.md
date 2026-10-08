@@ -470,28 +470,48 @@ lines, the graph is not loaded; check `graph_is_populated()` above.
 
 `graph_retrieve(query, k)` is signature-compatible with
 `rag.retriever.retrieve(query, k)` specifically so the two can be swapped in one
-harness. `evals/retrieval_eval.py` (recall@k / MRR on held-out cases, currently
-a stub) is where the comparison belongs.
+harness. `evals/retrieval_eval.py` carries both as named retrievers:
 
-The arms worth running, all reachable by parameter and none needing a code
-change:
+```bash
+python -m evals.retrieval_eval --retriever pgvector graph hybrid tfidf random
+python -m evals.retrieval_eval --retriever hybrid --fusion rrf
+python -m evals.retrieval_eval --retriever hybrid --alpha 0.25    # sweep
+```
 
-| Arm | Call |
+The harness refuses to start a graph arm against an empty or unreachable graph
+(`preflight_graph`), because `graph_retrieve`'s silent fallback would otherwise
+publish the vector retriever's numbers under the graph's name.
+
+Arms reachable without a code change:
+
+| Arm | How |
 |---|---|
-| Vector baseline | `retrieve(q, k)` |
-| Graph only | `graph_retrieve(q, k, use_vector=False)` |
-| Hybrid, weighted | `graph_retrieve(q, k, fusion="weighted", alpha=0.6)` |
-| Hybrid, RRF | `graph_retrieve(q, k, fusion="rrf")` |
-| Alpha sweep | `alpha ∈ {0.0, 0.25, 0.5, 0.75, 1.0}` |
-| Expansion off | `max_hops=0` |
-| Transcript-anchored | `graph_retrieve_for_transcript(t, k=5)` |
+| Vector baseline | `--retriever pgvector` |
+| Graph only | `--retriever graph` |
+| Hybrid, weighted | `--retriever hybrid --fusion weighted --alpha 0.6` |
+| Hybrid, RRF | `--retriever hybrid --fusion rrf` |
+| Alpha sweep | `--alpha` ∈ {0.0, 0.25, 0.5, 0.75, 1.0} |
+| Expansion off | `max_hops=0` (library-level; not yet a flag) |
+| Transcript-anchored | the agent's own path — `agent/tools.py`, scored by `evals/agent_eval.py` |
 
-Two things to hold onto when reading the results:
+Three things to hold onto when reading the results:
 
-1. `alpha=0.0` is *not* identical to the vector baseline — it still restricts
-   the candidate pool to the union of both lists. Compare against `retrieve`
-   directly, not against `alpha=0.0`.
-2. Under `fusion="weighted"`, a graph-only candidate has no vector score and is
+1. **Single-gold recall understates the graph arms by construction.** Every
+   query has exactly one document labeled relevant — the case doc built from
+   that same dialogue. Vector search can retrieve it, because query and
+   document share wording. Graph anchors retrieve that document's *equivalence
+   class* (same conflict structure, same contested issue, same outcome class),
+   and single-gold scoring counts every other member as a miss. A low graph
+   recall@k on this labeling is expected and is not a quality verdict. That is
+   why every row also carries `structural_match_at_k` next to
+   `structural_match_baseline` (what a random draw would score, given how
+   common that structure is) — a reading that does not presuppose one right
+   answer. Neither number is a human relevance judgement; both are cheap and
+   deterministic.
+2. `alpha=0.0` is *not* identical to the vector baseline — it still restricts
+   the candidate pool to the union of both lists. Compare against the
+   `pgvector` row directly, not against `alpha=0.0`.
+3. Under `fusion="weighted"`, a graph-only candidate has no vector score and is
    scored 0.0 on that axis, which systematically understates it. `fusion="rrf"`
    does not have that bias. If weighted wins, check it is not winning because of
    this.
@@ -501,51 +521,75 @@ hypothesis this code implements — not a result it demonstrates. Say it that wa
 
 ---
 
-## 8. Integration point for the agent (documented, not wired)
+## 8. Integration with the agent (WIRED)
 
-`agent/graph.py` and `agent/tools.py` are owned elsewhere, so nothing here is
-wired into the LangGraph agent. The hook is deliberately small.
+The graph is a first-class arm of the LangGraph agent. Two orthogonal knobs on
+`AgentState` give four arms with no undefined combination:
 
-`GraphRetrievedCase` **subclasses** `rag.retriever.RetrievedCase`, so
-`AgentState.retrieved: List[RetrievedCase]` needs no change. Adding a tool in
-`agent/tools.py`:
+| Arm | Request | What runs |
+|---|---|---|
+| no-RAG control | `use_rag: false` | retrieval skipped entirely |
+| vector baseline | `retrieval_mode: "vector"` (default) | `rag.retriever.retrieve` |
+| graph only | `retrieval_mode: "graph"` | `graph_retrieve(..., use_vector=False)` |
+| hybrid | `retrieval_mode: "hybrid"` | graph + vector, fused |
 
-```python
-from rag.graph_retriever import GraphRetrievedCase, graph_retrieve_for_transcript
+`retrieval_mode` is ignored when `use_rag` is false — "no retrieval" lives on
+the `use_rag` axis, so `use_rag=false, mode=graph` cannot mean two things.
 
-def retrieve_precedent_graph_tool(
-    transcript: Transcript, query: str, k: int = 5
-) -> List[GraphRetrievedCase]:
-    """Graph-anchored precedent. Falls back to vector-only if the graph is absent."""
-    return graph_retrieve_for_transcript(transcript, query=query, k=k)
+Where each piece lives:
+
+- `agent/tools.py` — `plan_precedent_graph_tool` (anchors only, no I/O) and
+  `retrieve_precedent_graph_tool` (accepts that plan). Both anchor on the
+  **transcript**, not just the query text: the agent holds the real
+  `Transcript`, so the priority rankings, contested issues and conflict
+  structure are known facts rather than words guessed from the last four
+  turns. That is the strongest anchor set available anywhere in the pipeline.
+- `agent/graph.py` — `RetrievalMode`, the `_node_retrieve` dispatch, and
+  `RetrievalInfo` (below). `_format_analysis` prints each hit's `matched_by`
+  lines under its text as `· why this case: …`, so the model is given the
+  *relation* that justified a case and not only its prose. That is the direct
+  countermeasure to the citation fabrication in `evals/agent_eval.py`, and it
+  makes a citation checkable after the fact.
+- `api/models.py` — `retrieval_mode` on both request models;
+  `RetrievedCasePayload` carries the graph fields over the wire. That payload
+  type is **load-bearing**: a response field typed `List[RetrievedCase]`
+  validates `GraphRetrievedCase` instances happily and drops every
+  subclass-only field, so the provenance would vanish at the API boundary with
+  nothing failing. `tests/test_api_wiring.py` pins it.
+- `mcp_server/tools.py` — `retrieve_precedent_graph`, over free text (an MCP
+  client has a question, not a parsed transcript).
+- `ui/app.py` — a sidebar retriever selector, the `matched_by` lines under each
+  precedent, and the degradation warning below.
+
+### `RetrievalInfo`: making the silent fallback visible
+
+§6 notes that `graph_retrieve` never raises on a missing graph. That is right
+for serving and dangerous for measurement, so the agent reports what actually
+happened alongside what was asked:
+
+```json
+{"mode": "graph", "n_retrieved": 5, "n_graph_grounded": 0,
+ "graph_effective": false, "plan": "plan[merged](issues=Firewood)", "note": "…"}
 ```
 
-and in `_node_retrieve`:
+`graph_effective` counts hits carrying structured `evidence`, **not**
+`matched_by` — `fuse` gives vector-only candidates the placeholder line
+"vector similarity only…", so counting those would report a graph as effective
+on a run where the traversal returned nothing.
 
-```python
-query = state.get("retrieval_query") or _default_query(state["transcript"])
-if state.get("use_graph", False):                       # third ablation arm
-    return {"retrieved": retrieve_precedent_graph_tool(state["transcript"], query, k=5)}
-return {"retrieved": retrieve_precedent_tool(query, k=5)}
-```
+The `note` separates the two ways a graph arm comes back empty, because they
+have different fixes and only one of them is a fault:
 
-Two notes for whoever wires it:
+- **empty plan** — nothing resolved to an anchor, so the traversal never ran.
+  Ordinary for input outside the corpus domain: a business email thread has no
+  campsite priority rankings and rarely trips the CaSiNo lexicon.
+- **plan built, no evidence** — the traversal ran and found nothing, or the
+  tables are missing and the retriever degraded. Check `graph_is_populated()`.
 
-- **Prefer `graph_retrieve_for_transcript` over `graph_retrieve`.** The agent
-  holds the actual `Transcript`, so the priority rankings, contested issue and
-  conflict structure are *known facts* rather than words to be guessed from the
-  last four turns. That is the strongest anchor set available anywhere in the
-  pipeline.
-- **Surface the provenance in the recommendation prompt.** Each hit carries
-  `matched_by` — one plain-English line per piece of evidence. Appending those
-  under each precedent in `_format_analysis` gives the model the *relation* that
-  justified the case, not just its text, which is the direct countermeasure to
-  the citation-fabrication that motivated this layer. It also makes a fabricated
-  citation checkable after the fact: if the model cites a case, the evidence
-  list says exactly what relation it actually stands in.
-
-`use_graph` as a third arm of the existing RAG-vs-no-RAG ablation (no-RAG /
-vector-RAG / graph-RAG) costs one boolean and makes the comparison free.
+`GET /health?probe_graph=true` answers the same question before you run
+anything. It is opt-in because the probe opens a database connection, and a
+health poll that wakes a suspended Neon branch every time would undo the
+scale-to-zero design.
 
 ---
 

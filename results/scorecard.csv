@@ -1,0 +1,16 @@
+dimension,metric,value,status,note,source
+Serving,Peak throughput,4699 tok/s @ c=64,info,"characterization, not a pass/fail",batching_curve.csv
+Serving,Cost at saturation,$0.27 / 1M out-tok,info,amortized GPU-second,batching_curve.csv
+Serving,Cold start,98 s,info,scale-to-zero wake; first-visit UX caveat,coldstart.csv
+Retrieval,"recall@5 (pgvector, dialogue)",1.0%,info,vs random 0.5%; struct-match 29.4% vs chance 26.9%,retrieval.csv
+Retrieval,"recall@5 (graph, dialogue)",0.0%,info,vs random 0.5%; struct-match 22.1% vs chance 26.9%,retrieval.csv
+Retrieval,"recall@5 (hybrid, dialogue)",1.0%,info,vs random 0.5%; struct-match 22.7% vs chance 26.9%,retrieval.csv
+RAG ablation,RAG vs no-RAG win-rate,26.7% (95% CI 10.9%–52.0%),warn,pass only if the CI clears 50%,agent_eval.csv
+RAG ablation,Citation fabrication (deterministic),1.8%,pass,lexical grounding floor; lower is better,agent_eval.csv
+RAG triad,faithfulness,—,not-measured,run: python -m evals.rag_triad_eval,rag_triad.csv
+Sentiment,reliability,—,not-measured,run: python -m evals.sentiment_eval,sentiment.csv
+Outcome model,Accuracy lift over base rate,0.020,by-design,"near-degenerate target (base rate 96.1%); reported, not claimed",outcome.csv
+Outcome model,Breakdown recall (minority class),50.0%,by-design,"few positives — read the confusion counts, not this alone",outcome.csv
+Safety,Prompt-injection,—,not-measured,run: python -m evals.safety_eval --checks injection,safety_injection.csv
+Safety,Tenant/corpus isolation violations,0,pass,MUST be 0 — any cross-namespace leak is a shipping blocker,safety_isolation.csv
+Safety,High-severity PII hits,0,pass,SSN/card/IBAN/account patterns in scanned surface,safety_pii.csv

@@ -28,15 +28,21 @@ class BehaviorFlag(BaseModel):
     """One extreme-behavior category and whether the transcript exhibits it."""
 
     name: str = Field(..., description="Behavior category (see BEHAVIOR_CATEGORIES).")
-    present: bool = Field(..., description="True if any turn in the transcript exhibits this behavior.")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Model self-reported confidence in [0,1].")
+    present: bool = Field(
+        ..., description="True if any turn in the transcript exhibits this behavior."
+    )
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Model self-reported confidence in [0,1]."
+    )
     turn_indices: List[int] = Field(
         default_factory=list,
         description="Turn indices that triggered the flag. Empty if `present=False`.",
     )
     evidence: str = Field(
         "",
-        description="One-sentence quote or paraphrase of the strongest evidence. Empty if not present.",
+        description=(
+            "One-sentence quote or paraphrase of the strongest evidence. Empty if not present."
+        ),
     )
 
 
@@ -68,7 +74,8 @@ _SYSTEM = (
     "- stonewalling: refusal to engage, one-word dismissals, silence-as-tactic.\n"
     "- personal_attacks: attacks on the person, not the position; insults, ad hominem.\n"
     "- deception_signals: contradictions, evasions, obvious misrepresentation of facts.\n"
-    "- extreme_anchoring: opening offer wildly outside the reasonable zone (>2x from listed/target)."
+    "- extreme_anchoring: opening offer wildly outside the reasonable zone "
+    "(>2x from listed/target)."
 )
 
 

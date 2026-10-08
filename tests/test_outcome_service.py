@@ -10,8 +10,6 @@ Covers the two things a serving-time wrapper actually has to get right:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from analysis.outcome_service import _load, predict_from_transcript
@@ -90,7 +88,11 @@ def test_single_row_reindex_matches_trained_columns(monkeypatch, tmp_path):
 
     artifact_path = tmp_path / "outcome_model.joblib"
     joblib.dump(
-        {"model": _FakeClassifier(), "calibrator": _FakeCalibrator(), "feature_columns": trained_columns},
+        {
+            "model": _FakeClassifier(),
+            "calibrator": _FakeCalibrator(),
+            "feature_columns": trained_columns,
+        },
         artifact_path,
     )
     monkeypatch.setenv("OUTCOME_MODEL_PATH", str(artifact_path))
@@ -110,7 +112,8 @@ def test_single_row_reindex_matches_trained_columns(monkeypatch, tmp_path):
 
 def test_env_override_wins_over_default(monkeypatch, tmp_path):
     """`OUTCOME_MODEL_PATH` env must be honored over the module default."""
-    from analysis.outcome_service import MissingModelError, _load as loader
+    from analysis.outcome_service import MissingModelError
+    from analysis.outcome_service import _load as loader
 
     loader.cache_clear()  # prior tests may have cached a successful load
     fake = tmp_path / "elsewhere.joblib"

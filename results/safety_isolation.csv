@@ -1,0 +1,6 @@
+check,result
+retrievable_in_own_namespace,True
+leaked_to_other_namespace,False
+leaked_to_benchmark_corpus,False
+isolation_violations,0
+passed,True

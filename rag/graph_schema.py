@@ -92,7 +92,7 @@ REL_PRIORITIZES = "PRIORITIZES"          # party -> issue   {level: High|Medium|
 REL_ALLOCATED = "ALLOCATED"              # party -> issue   {quantity} (final deal)
 REL_USED_STRATEGY = "USED_STRATEGY"      # party -> strategy {count, first_turn, last_turn}
 REL_CONTESTED = "CONTESTED"              # negotiation -> issue (both parties ranked it High)
-REL_TRADED = "TRADED"                    # negotiation -> issue (one party's High is the other's Low)
+REL_TRADED = "TRADED"  # negotiation -> issue (one party's High is the other's Low)
 REL_HAS_STRUCTURE = "HAS_STRUCTURE"      # negotiation -> conflict
 REL_RESULTED_IN = "RESULTED_IN"          # negotiation -> outcome
 REL_PRECEDED = "PRECEDED"                # strategy -> outcome  (derived, corpus-level aggregate)
@@ -206,7 +206,9 @@ CONFLICT_STRUCTURES: Tuple[str, ...] = (
 CONFLICT_DESCRIPTIONS: Dict[str, str] = {
     STRUCT_IDENTICAL: "Both parties ranked all three issues the same way — maximally zero-sum.",
     STRUCT_HIGH_CLASH: "Both parties named the same issue their top priority.",
-    STRUCT_COMPLEMENTARY: "Each party's top priority is the other's lowest — maximal trade potential.",
+    STRUCT_COMPLEMENTARY: (
+        "Each party's top priority is the other's lowest — maximal trade potential."
+    ),
     STRUCT_PARTIAL: "Priorities overlap partially; some trades create value, some do not.",
     STRUCT_UNKNOWN: "Priority rankings were missing or incomplete for at least one party.",
 }
@@ -231,27 +233,27 @@ STRUCTURE_SUBSUMES: Dict[str, Tuple[str, ...]] = {
 
 
 def negotiation_node_id(dialogue_id: str) -> str:
-    return "{}:{}".format(NODE_NEGOTIATION, dialogue_id)
+    return f"{NODE_NEGOTIATION}:{dialogue_id}"
 
 
 def party_node_id(dialogue_id: str, party_id: str) -> str:
-    return "{}:{}:{}".format(NODE_PARTY, dialogue_id, party_id)
+    return f"{NODE_PARTY}:{dialogue_id}:{party_id}"
 
 
 def issue_node_id(issue: str) -> str:
-    return "{}:{}".format(NODE_ISSUE, canonical_issue(issue) or issue)
+    return f"{NODE_ISSUE}:{canonical_issue(issue) or issue}"
 
 
 def strategy_node_id(strategy: str) -> str:
-    return "{}:{}".format(NODE_STRATEGY, strategy)
+    return f"{NODE_STRATEGY}:{strategy}"
 
 
 def outcome_node_id(outcome_class: str) -> str:
-    return "{}:{}".format(NODE_OUTCOME, outcome_class)
+    return f"{NODE_OUTCOME}:{outcome_class}"
 
 
 def conflict_node_id(structure: str) -> str:
-    return "{}:{}".format(NODE_CONFLICT, structure)
+    return f"{NODE_CONFLICT}:{structure}"
 
 
 def node_local_id(node_id: str) -> str:

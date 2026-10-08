@@ -56,11 +56,9 @@ def psycopg_dsn(url: str = "") -> str:
     )
     if not resolved:
         raise RuntimeError(
-            "{} not set — export the Neon connection string first "
+            f"{DATABASE_URL_ENV} not set — export the Neon connection string first "
             "(see infra/neon/README.md; the graph layer reuses the same one, "
-            "or set {} to point the graph elsewhere)".format(
-                DATABASE_URL_ENV, GRAPH_DATABASE_URL_ENV
-            )
+            f"or set {GRAPH_DATABASE_URL_ENV} to point the graph elsewhere)"
         )
     if resolved.startswith(_SQLALCHEMY_PREFIX):
         return _PLAIN_PREFIX + resolved[len(_SQLALCHEMY_PREFIX):]
@@ -83,7 +81,9 @@ def connect(url: str = "", autocommit: bool = False):
         conn.close()
 
 
-def fetch_all(sql: str, params: Optional[Dict[str, Any]] = None, url: str = "") -> List[Dict[str, Any]]:
+def fetch_all(
+    sql: str, params: Optional[Dict[str, Any]] = None, url: str = ""
+) -> List[Dict[str, Any]]:
     """Run a read query and return rows as dicts. One connection, one round trip."""
     from psycopg.rows import dict_row
 
@@ -123,7 +123,7 @@ def graph_is_populated(url: str = "") -> bool:
 
     try:
         rows = fetch_all(
-            "SELECT COUNT(*) AS n FROM {}".format(NODE_TABLE), url=url
+            f"SELECT COUNT(*) AS n FROM {NODE_TABLE}", url=url
         )
     except Exception as exc:  # noqa: BLE001 — missing table / unreachable DB are both "not populated"
         logger.info("graph not available (%s: %s)", type(exc).__name__, exc)

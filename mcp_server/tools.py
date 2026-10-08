@@ -1,9 +1,9 @@
 """FastMCP tool layer exposing Accord's negotiation-intelligence pipeline.
 
-Three MCP tools — `retrieve_precedent`, `predict_outcome`, `analyze_sentiment`
-— each a thin wrapper around the same `analysis.*`/`rag.*` implementation
-`agent/tools.py` uses (DESIGN.md §5). Nothing in this module duplicates
-pipeline logic.
+Five MCP tools — `retrieve_precedent`, `retrieve_precedent_graph`,
+`predict_outcome`, `analyze_sentiment`, `detect_behaviors` — each a thin
+wrapper around the same `analysis.*`/`rag.*` implementation `agent/tools.py`
+uses (DESIGN.md §5). Nothing in this module duplicates pipeline logic.
 
 Run as a stdio MCP server:
     python -m mcp_server.tools
@@ -20,6 +20,7 @@ from analysis.behaviors import BehaviorFlag, detect
 from analysis.outcome_service import predict_from_transcript
 from analysis.sentiment import PerTurnSentiment, analyze
 from data.schema import Transcript
+from rag.graph_retriever import GraphRetrievedCase, graph_retrieve
 from rag.retriever import RetrievedCase, retrieve
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,27 @@ mcp = FastMCP("accord")
 def retrieve_precedent(query: str, k: int = 5) -> List[RetrievedCase]:
     """Return the top-k most similar precedents from the case corpus."""
     return retrieve(query, k=k)
+
+
+@mcp.tool()
+def retrieve_precedent_graph(
+    query: str, k: int = 5, use_vector: bool = True
+) -> List[GraphRetrievedCase]:
+    """Retrieve precedents by knowledge-graph structure, with provenance.
+
+    Answers what similarity search cannot: the corpus renders an adversarial
+    negotiation in the same neutral register as a friendly one, so words like
+    "hostile" appear nowhere in it. This maps the query onto graph anchors
+    (tactics, contested issues, outcome class, conflict structure) instead.
+
+    Each hit carries `matched_by` — one line per piece of evidence — so a
+    caller can check what relation a cited case actually stands in.
+
+    `use_vector=False` gives graph-only results; the default fuses graph and
+    vector rankings. Takes free text, unlike `agent/tools.py`'s transcript-
+    anchored variant: an MCP client has a question, not a parsed Transcript.
+    """
+    return graph_retrieve(query, k=k, use_vector=use_vector)
 
 
 @mcp.tool()

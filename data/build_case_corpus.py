@@ -37,7 +37,9 @@ from data.schema import CaseDocument, Transcript
 DEFAULT_INPUT = Path("data/processed/casino.jsonl")
 DEFAULT_OUTPUT = Path("data/processed/case_corpus.jsonl")
 
-DOMAIN_BLURB = "a campsite negotiation between two campers bartering over Food, Water, and Firewood packages"
+DOMAIN_BLURB = (
+    "a campsite negotiation between two campers bartering over Food, Water, and Firewood packages"
+)
 
 # Human-readable definitions for CaSiNo's persuasion-strategy taxonomy. Kept in
 # this module (not ingestion) because it's a RAG-corpus artifact, not a
@@ -76,7 +78,11 @@ def _priority_line(transcript: Transcript) -> str:
         rendered = ", ".join(
             f"{level}={by_level[level]}" for level in ("High", "Medium", "Low") if level in by_level
         )
-        parts.append(f"{party.party_id} priorities: {rendered}" if rendered else f"{party.party_id} priorities: unknown")
+        parts.append(
+            f"{party.party_id} priorities: {rendered}"
+            if rendered
+            else f"{party.party_id} priorities: unknown"
+        )
     return " ".join(parts)
 
 
@@ -179,7 +185,9 @@ def build_case(transcript: Transcript) -> CaseDocument:
             "domain": transcript.domain,
             "split": transcript.metadata.get("split"),
             "agreement_reached": transcript.outcome.agreement_reached,
-            "outcome_label": "agreement" if transcript.outcome.agreement_reached else "no_agreement",
+            "outcome_label": "agreement"
+            if transcript.outcome.agreement_reached
+            else "no_agreement",
             "points": _points(transcript),
             "has_strategy_annotations": transcript.has_strategy_annotations,
             "dominant_strategies": _dominant_strategies(counts),

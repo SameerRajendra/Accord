@@ -10,7 +10,6 @@ import math
 from analysis.outcome_model import build_feature_matrix, extract_features
 from data.schema import Action, Outcome, Party, Transcript, Turn
 
-
 _ISSUES = ("Firewood", "Water", "Food")
 
 
@@ -54,7 +53,9 @@ def _agreement_transcript(high_a="Firewood", high_b="Water") -> Transcript:
         turns=[
             Turn(index=0, speaker="agent_1", text="Hi!", strategies=["small-talk"]),
             Turn(index=1, speaker="agent_2", text="I need firewood", strategies=["self-need"]),
-            Turn(index=2, speaker="agent_1", text="Let's trade", strategies=["promote-coordination"]),
+            Turn(
+                index=2, speaker="agent_1", text="Let's trade", strategies=["promote-coordination"]
+            ),
             Turn(
                 index=3,
                 speaker="agent_1",
@@ -117,7 +118,16 @@ def test_features_are_order_invariant():
 def test_no_leakage_no_outcome_features():
     """The feature set must never encode the resolution or any outcome field."""
     f = extract_features(_agreement_transcript())
-    forbidden = ("accept", "reject", "quit", "agreement", "final_deal", "points", "satisfaction", "likeness")
+    forbidden = (
+        "accept",
+        "reject",
+        "quit",
+        "agreement",
+        "final_deal",
+        "points",
+        "satisfaction",
+        "likeness",
+    )
     for key in f:
         for bad in forbidden:
             assert bad not in key.lower(), f"feature '{key}' looks like it leaks an outcome"

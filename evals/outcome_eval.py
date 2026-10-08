@@ -114,7 +114,9 @@ def run_eval(input_path: Path, results_dir: Path, model_path: Path) -> dict:
     tn, fp, fn, tp = confusion_matrix(y_test, test_pred, labels=[0, 1]).ravel()
     breakdown_recall = float(tn / (tn + fp)) if (tn + fp) else float("nan")
     accuracy_lift = float(accuracy - base_rate)
-    prob_true, prob_pred = calibration_curve(y_test, test_proba, n_bins=N_CALIBRATION_BINS, strategy="uniform")
+    prob_true, prob_pred = calibration_curve(
+        y_test, test_proba, n_bins=N_CALIBRATION_BINS, strategy="uniform"
+    )
 
     save_model(model, calibrator, list(X_train.columns), model_path)
 

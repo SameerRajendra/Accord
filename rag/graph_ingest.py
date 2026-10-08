@@ -199,7 +199,9 @@ def _party_role(points: Dict[str, int], party_id: str) -> str:
     return "winner" if mine > theirs else "loser"
 
 
-def _case_index(cases: Optional[Iterable[CaseDocument]]) -> Tuple[Dict[str, CaseDocument], Dict[str, CaseDocument]]:
+def _case_index(
+    cases: Optional[Iterable[CaseDocument]],
+) -> Tuple[Dict[str, CaseDocument], Dict[str, CaseDocument]]:
     """Split the corpus into (dialogue_id -> case doc, strategy name -> playbook doc).
 
     Keyed on `metadata['dialogue_id']`, **not** `case_id`: the corpus builder
@@ -262,9 +264,9 @@ def build_global_nodes(strategy_docs: Optional[Dict[str, CaseDocument]] = None) 
                     "strategy": name,
                     "polarity": STRATEGY_POLARITY.get(name, "neutral"),
                     "definition": definition,
-                    "case_id": doc.case_id if doc else "strategy-{}".format(name),
+                    "case_id": doc.case_id if doc else f"strategy-{name}",
                     "source": doc.source if doc else "playbook",
-                    "text": doc.text if doc else "Strategy: {}. {}".format(name, definition),
+                    "text": doc.text if doc else f"Strategy: {name}. {definition}",
                 },
             )
         )
@@ -353,7 +355,9 @@ def build_negotiation(
         )
     )
 
-    edges.append(GraphEdge(src_id=neg_id, dst_id=conflict_node_id(structure), rel=REL_HAS_STRUCTURE))
+    edges.append(
+        GraphEdge(src_id=neg_id, dst_id=conflict_node_id(structure), rel=REL_HAS_STRUCTURE)
+    )
     edges.append(GraphEdge(src_id=neg_id, dst_id=outcome_node_id(out_class), rel=REL_RESULTED_IN))
     for issue in contested:
         edges.append(GraphEdge(src_id=neg_id, dst_id=issue_node_id(issue), rel=REL_CONTESTED))
@@ -368,7 +372,7 @@ def build_negotiation(
             GraphNode(
                 node_id=pid,
                 node_type=NODE_PARTY,
-                label="{} ({})".format(party.party_id, dialogue_id),
+                label=f"{party.party_id} ({dialogue_id})",
                 props={
                     "party_id": party.party_id,
                     "dialogue_id": dialogue_id,
@@ -628,7 +632,9 @@ def build_graph(
             cls = node.props["outcome_class"]
             node.props["n_negotiations"] = outcome_hist.get(cls, 0)
             node.props["share"] = (
-                round(outcome_hist.get(cls, 0) / float(n_negotiations), 6) if n_negotiations else 0.0
+                round(outcome_hist.get(cls, 0) / float(n_negotiations), 6)
+                if n_negotiations
+                else 0.0
             )
         elif node.node_type == NODE_CONFLICT:
             structure = node.props["structure"]
@@ -666,22 +672,22 @@ def build_graph(
 # --------------------------------------------------------------------------
 
 
-_UPSERT_NODE = """
-INSERT INTO {table} (node_id, node_type, label, props)
+_UPSERT_NODE = f"""
+INSERT INTO {NODE_TABLE} (node_id, node_type, label, props)
 VALUES (%s, %s, %s, %s)
 ON CONFLICT (node_id) DO UPDATE
    SET node_type = EXCLUDED.node_type,
        label     = EXCLUDED.label,
        props     = EXCLUDED.props
-""".format(table=NODE_TABLE)
+"""
 
-_UPSERT_EDGE = """
-INSERT INTO {table} (src_id, dst_id, rel, weight, props)
+_UPSERT_EDGE = f"""
+INSERT INTO {EDGE_TABLE} (src_id, dst_id, rel, weight, props)
 VALUES (%s, %s, %s, %s, %s)
 ON CONFLICT (src_id, rel, dst_id) DO UPDATE
    SET weight = EXCLUDED.weight,
        props  = EXCLUDED.props
-""".format(table=EDGE_TABLE)
+"""
 
 
 def ddl_path() -> Path:
@@ -740,9 +746,7 @@ def load_graph(
             if wipe:
                 logger.info("truncating %s / %s", EDGE_TABLE, NODE_TABLE)
                 cur.execute(
-                    "TRUNCATE {edges}, {nodes} RESTART IDENTITY CASCADE".format(
-                        edges=EDGE_TABLE, nodes=NODE_TABLE
-                    )
+                    f"TRUNCATE {EDGE_TABLE}, {NODE_TABLE} RESTART IDENTITY CASCADE"
                 )
             logger.info("inserting %d nodes", len(node_rows))
             for start in range(0, len(node_rows), batch_size):
@@ -763,8 +767,8 @@ def load_graph(
 def load_transcripts(path: Path) -> List[Transcript]:
     if not path.exists():
         raise FileNotFoundError(
-            "{} not found. Run the ingestion first:\n"
-            "  python -m data.ingest_casino --download".format(path)
+            f"{path} not found. Run the ingestion first:\n"
+            "  python -m data.ingest_casino --download"
         )
     return [
         Transcript.model_validate_json(line)
@@ -776,8 +780,8 @@ def load_transcripts(path: Path) -> List[Transcript]:
 def load_cases(path: Path) -> List[CaseDocument]:
     if not path.exists():
         raise FileNotFoundError(
-            "{} not found. Build the case corpus first:\n"
-            "  python -m data.build_case_corpus".format(path)
+            f"{path} not found. Build the case corpus first:\n"
+            "  python -m data.build_case_corpus"
         )
     return [
         CaseDocument.model_validate_json(line)
@@ -818,7 +822,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Dialogue count floor for a CO_OCCURS_WITH edge.")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
     transcripts = load_transcripts(args.input)
     cases = load_cases(args.corpus) if args.corpus.exists() else []

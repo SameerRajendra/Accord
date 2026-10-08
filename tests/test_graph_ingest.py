@@ -81,7 +81,9 @@ def _clash_transcript() -> Transcript:
         turns=[
             Turn(index=0, speaker="agent_1", text="Hi", strategies=["small-talk"]),
             Turn(index=1, speaker="agent_2", text="I need firewood", strategies=["self-need"]),
-            Turn(index=2, speaker="agent_1", text="You don't really need it", strategies=["uv-part"]),
+            Turn(
+                index=2, speaker="agent_1", text="You don't really need it", strategies=["uv-part"]
+            ),
             Turn(index=3, speaker="agent_1", text="Seriously, you don't", strategies=["uv-part"]),
             Turn(
                 index=4,
@@ -128,10 +130,10 @@ def _breakdown_transcript() -> Transcript:
 def _case_doc(dialogue_id: str) -> CaseDocument:
     """Mirrors the real corpus, including its `casino-casino-N` case_id quirk."""
     return CaseDocument(
-        case_id="casino-{}".format(dialogue_id),
+        case_id=f"casino-{dialogue_id}",
         source="casino",
         kind="case",
-        text="Case casino-{} — rendered precedent text.".format(dialogue_id),
+        text=f"Case casino-{dialogue_id} — rendered precedent text.",
         metadata={"dialogue_id": dialogue_id, "split": "train"},
     )
 

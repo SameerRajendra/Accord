@@ -134,14 +134,18 @@ def build_feature_matrix(transcripts: list) -> tuple:
     return df, y
 
 
-def train_outcome_model(X_train: pd.DataFrame, y_train: pd.Series, **xgb_overrides) -> xgb.XGBClassifier:
+def train_outcome_model(
+    X_train: pd.DataFrame, y_train: pd.Series, **xgb_overrides
+) -> xgb.XGBClassifier:
     params = {**DEFAULT_XGB_PARAMS, **xgb_overrides}
     model = xgb.XGBClassifier(**params)
     model.fit(X_train, y_train)
     return model
 
 
-def calibrate(model: xgb.XGBClassifier, X_val: pd.DataFrame, y_val: pd.Series) -> IsotonicRegression:
+def calibrate(
+    model: xgb.XGBClassifier, X_val: pd.DataFrame, y_val: pd.Series
+) -> IsotonicRegression:
     """Fit isotonic calibration on the model's raw validation-set scores."""
     raw_proba = model.predict_proba(X_val)[:, 1]
     calibrator = IsotonicRegression(out_of_bounds="clip")
@@ -149,7 +153,9 @@ def calibrate(model: xgb.XGBClassifier, X_val: pd.DataFrame, y_val: pd.Series) -
     return calibrator
 
 
-def predict_calibrated(model: xgb.XGBClassifier, calibrator: IsotonicRegression, X: pd.DataFrame) -> np.ndarray:
+def predict_calibrated(
+    model: xgb.XGBClassifier, calibrator: IsotonicRegression, X: pd.DataFrame
+) -> np.ndarray:
     raw_proba = model.predict_proba(X)[:, 1]
     return calibrator.predict(raw_proba)
 
@@ -158,7 +164,9 @@ def save_model(
     model: xgb.XGBClassifier, calibrator: IsotonicRegression, feature_columns: list[str], path: Path
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "calibrator": calibrator, "feature_columns": feature_columns}, path)
+    joblib.dump(
+        {"model": model, "calibrator": calibrator, "feature_columns": feature_columns}, path
+    )
 
 
 def load_model(path: Path) -> tuple[xgb.XGBClassifier, IsotonicRegression, list[str]]:

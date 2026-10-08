@@ -8,7 +8,7 @@ of the raw-parquet format.
 
 from pathlib import Path
 
-from data.build_case_corpus import build_case, build_cases, build_corpus, build_playbook
+from data.build_case_corpus import build_case, build_corpus, build_playbook
 from data.schema import Action, CaseDocument, Outcome, Party, Transcript, Turn
 
 
@@ -34,15 +34,28 @@ def _agreement_transcript() -> Transcript:
             ),
         ],
         turns=[
-            Turn(index=0, speaker="agent_1", text="Hi there!", strategies=["small-talk", "elicit-pref"]),
+            Turn(
+                index=0,
+                speaker="agent_1",
+                text="Hi there!",
+                strategies=["small-talk", "elicit-pref"],
+            ),
             Turn(index=1, speaker="agent_2", text="I need water", strategies=["self-need"]),
-            Turn(index=2, speaker="agent_1", text="Let's find a fair split", strategies=["vouch-fair", "promote-coordination"]),
+            Turn(
+                index=2,
+                speaker="agent_1",
+                text="Let's find a fair split",
+                strategies=["vouch-fair", "promote-coordination"],
+            ),
             Turn(
                 index=3,
                 speaker="agent_1",
                 text="Submit-Deal",
                 action=Action.SUBMIT_DEAL,
-                action_data={"issue2youget": {"Firewood": "3", "Food": "2"}, "issue2theyget": {"Water": "3", "Food": "1"}},
+                action_data={
+                    "issue2youget": {"Firewood": "3", "Food": "2"},
+                    "issue2theyget": {"Water": "3", "Food": "1"},
+                },
             ),
             Turn(index=4, speaker="agent_2", text="Accept-Deal", action=Action.ACCEPT_DEAL),
         ],
@@ -62,11 +75,24 @@ def _no_agreement_transcript() -> Transcript:
         source="casino",
         domain="campsite_resources",
         parties=[
-            Party(party_id="agent_1", priorities={"Firewood": "High", "Food": "Medium", "Water": "Low"}, metadata={}),
-            Party(party_id="agent_2", priorities={"Firewood": "High", "Water": "Medium", "Food": "Low"}, metadata={}),
+            Party(
+                party_id="agent_1",
+                priorities={"Firewood": "High", "Food": "Medium", "Water": "Low"},
+                metadata={},
+            ),
+            Party(
+                party_id="agent_2",
+                priorities={"Firewood": "High", "Water": "Medium", "Food": "Low"},
+                metadata={},
+            ),
         ],
         turns=[
-            Turn(index=0, speaker="agent_1", text="I really need all the firewood", strategies=["self-need"]),
+            Turn(
+                index=0,
+                speaker="agent_1",
+                text="I really need all the firewood",
+                strategies=["self-need"],
+            ),
             Turn(index=1, speaker="agent_2", text="No, I need it more", strategies=["uv-part"]),
             Turn(index=2, speaker="agent_1", text="Walk-Away", action=Action.WALK_AWAY),
         ],
@@ -134,7 +160,10 @@ def test_build_corpus_writes_cases_plus_playbook(tmp_path: Path):
 
     in_path = tmp_path / "casino.jsonl"
     in_path.write_text(
-        _agreement_transcript().model_dump_json() + "\n" + _no_agreement_transcript().model_dump_json() + "\n",
+        _agreement_transcript().model_dump_json()
+        + "\n"
+        + _no_agreement_transcript().model_dump_json()
+        + "\n",
         encoding="utf-8",
     )
     out_path = tmp_path / "case_corpus.jsonl"

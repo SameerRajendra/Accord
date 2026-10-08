@@ -108,29 +108,102 @@ logger = logging.getLogger(__name__)
 # "empathy", "empathetic"). Everything else is whole-word.
 
 _ISSUE_TERMS: Dict[str, Tuple[str, ...]] = {
-    "Firewood": ("firewood", "fire wood", "wood", "fire", "campfire", "warmth", "warm", "heat", "cold"),
+    "Firewood": (
+        "firewood",
+        "fire wood",
+        "wood",
+        "fire",
+        "campfire",
+        "warmth",
+        "warm",
+        "heat",
+        "cold",
+    ),
     "Food": ("food", "meal*", "eat*", "hungry", "hunger", "snack*", "provision*", "ration*"),
     "Water": ("water", "drink*", "thirst*", "hydrat*", "dehydrat*"),
 }
 
 _STRATEGY_TERMS: Dict[str, Tuple[str, ...]] = {
-    "small-talk": ("small talk", "smalltalk", "chit chat", "chitchat", "rapport", "pleasantr*", "greeting*"),
+    "small-talk": (
+        "small talk",
+        "smalltalk",
+        "chit chat",
+        "chitchat",
+        "rapport",
+        "pleasantr*",
+        "greeting*",
+    ),
     "elicit-pref": (
-        "elicit*", "ask what they", "ask them what", "probe*", "preference*", "their priorit*",
-        "what do you need", "discover*", "find out what",
+        "elicit*",
+        "ask what they",
+        "ask them what",
+        "probe*",
+        "preference*",
+        "their priorit*",
+        "what do you need",
+        "discover*",
+        "find out what",
     ),
     "showing-empathy": ("empath*", "sympath*", "acknowledg*", "validat*", "understanding"),
     "promote-coordination": (
-        "coordinat*", "collaborat*", "cooperat*", "work together", "mutual*", "joint",
-        "integrative", "logroll*", "trade off", "trade-off", "value creat*",
+        "coordinat*",
+        "collaborat*",
+        "cooperat*",
+        "work together",
+        "mutual*",
+        "joint",
+        "integrative",
+        "logroll*",
+        "trade off",
+        "trade-off",
+        "value creat*",
     ),
-    "no-need": ("no need", "don't need", "do not need", "dont need", "give it up", "give up", "concede*", "concession*"),
+    "no-need": (
+        "no need",
+        "don't need",
+        "do not need",
+        "dont need",
+        "give it up",
+        "give up",
+        "concede*",
+        "concession*",
+    ),
     "self-need": ("self need", "my need*", "i need", "personal need", "justif*"),
-    "other-need": ("other need", "my family", "my group", "my kids", "my children", "my dog", "my pet", "grandma", "elderly", "on behalf"),
-    "vouch-fair": ("fair", "fairly", "fairness", "unfair", "even split", "split even*", "equal split", "50/50", "fifty fifty", "half each"),
+    "other-need": (
+        "other need",
+        "my family",
+        "my group",
+        "my kids",
+        "my children",
+        "my dog",
+        "my pet",
+        "grandma",
+        "elderly",
+        "on behalf",
+    ),
+    "vouch-fair": (
+        "fair",
+        "fairly",
+        "fairness",
+        "unfair",
+        "even split",
+        "split even*",
+        "equal split",
+        "50/50",
+        "fifty fifty",
+        "half each",
+    ),
     "uv-part": (
-        "undervalu*", "under-valu*", "dismiss*", "belittl*", "downplay*", "disregard*",
-        "you don't need", "you do not need", "insult*", "demean*",
+        "undervalu*",
+        "under-valu*",
+        "dismiss*",
+        "belittl*",
+        "downplay*",
+        "disregard*",
+        "you don't need",
+        "you do not need",
+        "insult*",
+        "demean*",
     ),
     "non-strategic": ("logistic*", "filler", "housekeeping"),
 }
@@ -172,15 +245,46 @@ _STRUCTURE_TERMS: Dict[str, Tuple[str, ...]] = {
 #: which negotiations collapsed.
 _POLARITY_TERMS: Dict[str, Tuple[str, ...]] = {
     "adversarial": (
-        "hostil*", "aggressiv*", "adversarial", "antagonist*", "combative", "confrontational",
-        "attack*", "threat*", "ultimatum*", "stonewall*", "escalat*", "toxic", "rude",
-        "abusive", "bad faith", "hardball", "coerc*",
+        "hostil*",
+        "aggressiv*",
+        "adversarial",
+        "antagonist*",
+        "combative",
+        "confrontational",
+        "attack*",
+        "threat*",
+        "ultimatum*",
+        "stonewall*",
+        "escalat*",
+        "toxic",
+        "rude",
+        "abusive",
+        "bad faith",
+        "hardball",
+        "coerc*",
     ),
     "integrative": (
-        "collaborat*", "cooperat*", "win-win", "win win", "integrative", "value creat*",
-        "amicable", "constructive", "friendly", "de-escalat*", "deescalat*",
+        "collaborat*",
+        "cooperat*",
+        "win-win",
+        "win win",
+        "integrative",
+        "value creat*",
+        "amicable",
+        "constructive",
+        "friendly",
+        "de-escalat*",
+        "deescalat*",
     ),
-    "distributive": ("zero-sum", "zero sum", "positional", "haggl*", "distributive", "hard bargain*", "anchor*"),
+    "distributive": (
+        "zero-sum",
+        "zero sum",
+        "positional",
+        "haggl*",
+        "distributive",
+        "hard bargain*",
+        "anchor*",
+    ),
     "rapport": ("rapport", "small talk", "warm up", "icebreak*"),
 }
 
@@ -209,8 +313,8 @@ _POLARITY_TO_STRATEGIES: Dict[str, Tuple[str, ...]] = {
 }
 
 
-def _compile(terms: Sequence[str]) -> List[Tuple[str, "re.Pattern"]]:
-    compiled: List[Tuple[str, "re.Pattern"]] = []
+def _compile(terms: Sequence[str]) -> List[Tuple[str, re.Pattern]]:
+    compiled: List[Tuple[str, re.Pattern]] = []
     for term in terms:
         stem = term.endswith("*")
         core = term[:-1] if stem else term
@@ -220,7 +324,7 @@ def _compile(terms: Sequence[str]) -> List[Tuple[str, "re.Pattern"]]:
     return compiled
 
 
-_COMPILED: Dict[str, Dict[str, List[Tuple[str, "re.Pattern"]]]] = {
+_COMPILED: Dict[str, Dict[str, List[Tuple[str, re.Pattern]]]] = {
     "issues": {anchor: _compile(terms) for anchor, terms in _ISSUE_TERMS.items()},
     "strategies": {anchor: _compile(terms) for anchor, terms in _STRATEGY_TERMS.items()},
     "outcomes": {anchor: _compile(terms) for anchor, terms in _OUTCOME_TERMS.items()},
@@ -384,7 +488,7 @@ def plan_from_transcript(
         structures = _expand_structures([conflict_structure(prio_a, prio_b)])
     else:
         notes.append(
-            "transcript has {} parties; conflict structure needs exactly 2".format(len(parties))
+            f"transcript has {len(parties)} parties; conflict structure needs exactly 2"
         )
 
     issues = sorted(set(contested_issues(prio_a, prio_b)) | set(traded_issues(prio_a, prio_b)))
@@ -422,6 +526,29 @@ def plan_from_transcript(
     )
 
 
+def plan_for_transcript(
+    transcript: Transcript,
+    query: Optional[str] = None,
+    target_outcome: Optional[str] = None,
+) -> GraphQueryPlan:
+    """The anchors a live transcript (plus optional free text) resolves to.
+
+    Factored out of `graph_retrieve_for_transcript` so a caller can hold the
+    plan *before* retrieving with it. The LangGraph agent needs exactly that:
+    an empty plan means the graph was never queried, which is a different
+    condition from "queried and returned nothing" (missing tables) and has a
+    completely different fix. Reporting them as one failure is how a graph
+    that was never consulted gets recorded as a graph that didn't help.
+
+    One implementation, two callers — `graph_retrieve_for_transcript` uses it
+    too, so the plan the agent inspects is the plan retrieval actually ran.
+    """
+    plan = plan_from_transcript(transcript, target_outcome=target_outcome)
+    if query:
+        plan = merge_plans(plan, plan_query(query))
+    return plan
+
+
 def merge_plans(*plans: GraphQueryPlan) -> GraphQueryPlan:
     """Union of anchors, order-preserving and duplicate-free."""
     merged = GraphQueryPlan(origin="merged")
@@ -456,12 +583,22 @@ class RetrievalWeights(BaseModel):
 
     strategy: float = Field(default=1.0, description="A party actually used an anchored strategy.")
     issue: float = Field(default=0.6, description="The negotiation contested an anchored issue.")
-    outcome: float = Field(default=0.8, description="The negotiation ended in an anchored outcome class.")
-    structure: float = Field(default=0.9, description="The negotiation has an anchored conflict structure.")
-    strategy_doc: float = Field(default=0.5, description="Playbook definition of an anchored strategy.")
+    outcome: float = Field(
+        default=0.8, description="The negotiation ended in an anchored outcome class."
+    )
+    structure: float = Field(
+        default=0.9, description="The negotiation has an anchored conflict structure."
+    )
+    strategy_doc: float = Field(
+        default=0.5, description="Playbook definition of an anchored strategy."
+    )
     traded_discount: float = Field(default=0.5, description="TRADED counts less than CONTESTED.")
-    count_saturation: float = Field(default=3.0, description="Uses of a strategy beyond this add nothing.")
-    hop_decay: float = Field(default=0.5, description="Multiplier per CO_OCCURS_WITH expansion hop.")
+    count_saturation: float = Field(
+        default=3.0, description="Uses of a strategy beyond this add nothing."
+    )
+    hop_decay: float = Field(
+        default=0.5, description="Multiplier per CO_OCCURS_WITH expansion hop."
+    )
 
 
 DEFAULT_WEIGHTS = RetrievalWeights()
@@ -473,10 +610,10 @@ DEFAULT_WEIGHTS = RetrievalWeights()
 # the walk strictly decays (weight <= 1, hop_decay < 1) and the depth guard
 # bounds it regardless. Cycles are harmless for the same reason — the
 # co-occurrence relation is stored in both directions.
-_STRATEGY_WALK = """
+_STRATEGY_WALK = f"""
 WITH RECURSIVE strategy_walk(node_id, w, depth) AS (
     SELECT n.node_id, 1.0::double precision, 0
-      FROM {nodes} n
+      FROM {NODE_TABLE} n
      WHERE n.node_type = 'strategy'
        AND n.node_id = ANY(%(strategy_ids)s::text[])
     UNION ALL
@@ -484,7 +621,7 @@ WITH RECURSIVE strategy_walk(node_id, w, depth) AS (
            sw.w * %(hop_decay)s::double precision * e.weight,
            sw.depth + 1
       FROM strategy_walk sw
-      JOIN {edges} e
+      JOIN {EDGE_TABLE} e
         ON e.src_id = sw.node_id
        AND e.rel = 'CO_OCCURS_WITH'
      WHERE sw.depth < %(max_hops)s
@@ -494,12 +631,12 @@ strategy_anchor AS (
       FROM strategy_walk
      GROUP BY node_id
 )
-""".format(nodes=NODE_TABLE, edges=EDGE_TABLE)
+"""
 
-_TRAVERSAL_SQL = _STRATEGY_WALK + """,
+_TRAVERSAL_SQL = _STRATEGY_WALK + f""",
 candidate AS (
     SELECT n.node_id, n.label, n.props
-      FROM {nodes} n
+      FROM {NODE_TABLE} n
      WHERE n.node_type = 'negotiation'
        AND n.props @> %(filters)s
 ),
@@ -515,8 +652,8 @@ strategy_raw AS (
            ) AS raw,
            COALESCE((us.props->>'count')::int, 1) AS use_count
       FROM strategy_anchor sa
-      JOIN {edges} us ON us.dst_id = sa.node_id AND us.rel = 'USED_STRATEGY'
-      JOIN {edges} hp ON hp.dst_id = us.src_id AND hp.rel = 'HAS_PARTY'
+      JOIN {EDGE_TABLE} us ON us.dst_id = sa.node_id AND us.rel = 'USED_STRATEGY'
+      JOIN {EDGE_TABLE} hp ON hp.dst_id = us.src_id AND hp.rel = 'HAS_PARTY'
       JOIN candidate c ON c.node_id = hp.src_id
 ),
 strategy_hits AS (
@@ -542,7 +679,7 @@ issue_hits AS (
                 ELSE %(w_issue)s::double precision * %(traded_discount)s::double precision
            END AS contribution,
            jsonb_build_object('rel', e.rel) AS detail
-      FROM {edges} e
+      FROM {EDGE_TABLE} e
       JOIN candidate c ON c.node_id = e.src_id
      WHERE e.rel IN ('CONTESTED', 'TRADED')
        AND e.dst_id = ANY(%(issue_ids)s::text[])
@@ -551,7 +688,7 @@ outcome_hits AS (
     SELECT e.src_id, 'outcome'::text, e.dst_id, 0,
            %(w_outcome)s::double precision,
            jsonb_build_object('rel', e.rel)
-      FROM {edges} e
+      FROM {EDGE_TABLE} e
       JOIN candidate c ON c.node_id = e.src_id
      WHERE e.rel = 'RESULTED_IN'
        AND e.dst_id = ANY(%(outcome_ids)s::text[])
@@ -560,7 +697,7 @@ structure_hits AS (
     SELECT e.src_id, 'structure'::text, e.dst_id, 0,
            %(w_structure)s::double precision,
            jsonb_build_object('rel', e.rel)
-      FROM {edges} e
+      FROM {EDGE_TABLE} e
       JOIN candidate c ON c.node_id = e.src_id
      WHERE e.rel = 'HAS_STRUCTURE'
        AND e.dst_id = ANY(%(structure_ids)s::text[])
@@ -595,34 +732,34 @@ SELECT a.negotiation_id AS node_id,
   JOIN candidate c ON c.node_id = a.negotiation_id
  ORDER BY a.graph_score DESC, a.negotiation_id
  LIMIT %(candidate_k)s
-""".format(nodes=NODE_TABLE, edges=EDGE_TABLE)
+"""
 
 # Playbook definitions for the anchored tactics. Returned alongside precedent
 # cases because "what is uv-part?" is a legitimate retrieval need, and because
 # the vector store already carries these same 10 documents — leaving them out
 # would make the head-to-head comparison unfair to the graph.
-_STRATEGY_DOC_SQL = _STRATEGY_WALK + """
+_STRATEGY_DOC_SQL = _STRATEGY_WALK + f"""
 SELECT n.node_id,
        n.label,
        n.props,
        sa.w * %(w_strategy_doc)s::double precision AS graph_score,
        sa.depth AS hops
   FROM strategy_anchor sa
-  JOIN {nodes} n ON n.node_id = sa.node_id
+  JOIN {NODE_TABLE} n ON n.node_id = sa.node_id
  ORDER BY graph_score DESC, n.node_id
  LIMIT %(strategy_doc_k)s
-""".format(nodes=NODE_TABLE)
+"""
 
-_PRECEDED_SQL = """
+_PRECEDED_SQL = f"""
 SELECT e.src_id AS strategy_id,
        e.dst_id AS outcome_id,
        e.weight AS lift,
        e.props  AS props
-  FROM {edges} e
+  FROM {EDGE_TABLE} e
  WHERE e.rel = 'PRECEDED'
    AND (e.props->>'support')::int >= %(min_support)s
  ORDER BY e.weight DESC, e.src_id
-""".format(edges=EDGE_TABLE)
+"""
 
 
 class GraphPathStep(BaseModel):
@@ -637,7 +774,9 @@ class GraphPathStep(BaseModel):
 class GraphEvidence(BaseModel):
     """Why a case was retrieved: which anchor, along which path, worth how much."""
 
-    kind: str = Field(..., description="'strategy' | 'issue' | 'outcome' | 'structure' | 'strategy_doc'.")
+    kind: str = Field(
+        ..., description="'strategy' | 'issue' | 'outcome' | 'structure' | 'strategy_doc'."
+    )
     anchor_id: str
     anchor_label: str
     contribution: float
@@ -651,9 +790,9 @@ class GraphEvidence(BaseModel):
             count = self.detail.get("count")
             party = self.detail.get("party_id", "")
             party_label = node_local_id(party).split(":")[-1] if party else "a party"
-            base = "{} used strategy '{}'".format(party_label, label)
+            base = f"{party_label} used strategy '{label}'"
             if count:
-                base += " x{}".format(count)
+                base += f" x{count}"
             if self.hops:
                 base += " (reached by {} co-occurrence hop{})".format(
                     self.hops, "" if self.hops == 1 else "s"
@@ -661,14 +800,14 @@ class GraphEvidence(BaseModel):
             return base
         if self.kind == "issue":
             rel = str(self.detail.get("rel", "")).lower() or "involved"
-            return "{} issue {}".format(rel, label)
+            return f"{rel} issue {label}"
         if self.kind == "outcome":
-            return "ended as {}".format(label)
+            return f"ended as {label}"
         if self.kind == "structure":
-            return "conflict structure {}".format(label)
+            return f"conflict structure {label}"
         if self.kind == "strategy_doc":
-            return "playbook definition of '{}'".format(label)
-        return "{} {}".format(self.kind, label)
+            return f"playbook definition of '{label}'"
+        return f"{self.kind} {label}"
 
 
 class GraphRetrievedCase(RetrievedCase):
@@ -696,7 +835,9 @@ class GraphRetrievedCase(RetrievedCase):
     )
 
 
-def _path_for(kind: str, negotiation_id: str, anchor_id: str, detail: Dict[str, Any]) -> List[GraphPathStep]:
+def _path_for(
+    kind: str, negotiation_id: str, anchor_id: str, detail: Dict[str, Any]
+) -> List[GraphPathStep]:
     """Reconstruct the traversal path from ids alone — no extra database round trip."""
 
     def step(node_id: str, rel: Optional[str] = None) -> GraphPathStep:
@@ -831,7 +972,7 @@ def _rows_to_cases(
         ]
         out.append(
             GraphRetrievedCase(
-                case_id=str(props.get("case_id") or "strategy-{}".format(name)),
+                case_id=str(props.get("case_id") or f"strategy-{name}"),
                 source=str(props.get("source") or "playbook"),
                 kind="strategy",
                 text=props.get("text") or "",
@@ -963,7 +1104,7 @@ def fuse(
         elif fusion == "weighted":
             case.score = alpha * g_norm + (1.0 - alpha) * v_norm
         else:
-            raise ValueError("unknown fusion {!r} — expected 'weighted' or 'rrf'".format(fusion))
+            raise ValueError(f"unknown fusion {fusion!r} — expected 'weighted' or 'rrf'")
 
         fused.append(case)
 
@@ -990,6 +1131,7 @@ def graph_retrieve(
     filters: Optional[Dict[str, Any]] = None,
     weights: Optional[RetrievalWeights] = None,
     database_url: str = "",
+    namespace: Optional[str] = None,
 ) -> List[GraphRetrievedCase]:
     """Retrieve the top-k precedents using graph structure **and** vector similarity.
 
@@ -1049,7 +1191,14 @@ def graph_retrieve(
         try:
             from rag.retriever import retrieve as vector_retrieve
 
-            vector_cases = list(vector_retrieve(query, k=vector_k))
+            # `namespace` selects the live collection for the vector half. The
+            # graph half above still traverses the benchmark graph — the
+            # extraction pipeline that builds a graph over ingested documents
+            # is the next phase, and until it lands a live-namespace hybrid
+            # query is vector-live + graph-benchmark. `agent.graph`'s
+            # RetrievalInfo reports whether graph evidence came back at all,
+            # so that mismatch is visible rather than assumed.
+            vector_cases = list(vector_retrieve(query, k=vector_k, namespace=namespace))
         except Exception as exc:  # noqa: BLE001 — pgvector down should not kill graph results
             logger.warning(
                 "vector retrieval failed (%s: %s) — degrading to graph-only",
@@ -1079,9 +1228,7 @@ def graph_retrieve_for_transcript(
     should make — see `infra/graph/README.md` for the integration point.
     """
     kwargs.pop("plan", None)  # this function owns planning; an override would conflict
-    plan = plan_from_transcript(transcript, target_outcome=target_outcome)
-    if query:
-        plan = merge_plans(plan, plan_query(query))
+    plan = plan_for_transcript(transcript, query=query, target_outcome=target_outcome)
     return graph_retrieve(query or "", k=k, plan=plan, **kwargs)
 
 
@@ -1133,6 +1280,7 @@ __all__ = [
     "DEFAULT_WEIGHTS",
     "plan_query",
     "plan_from_transcript",
+    "plan_for_transcript",
     "merge_plans",
     "fuse",
     "graph_retrieve",

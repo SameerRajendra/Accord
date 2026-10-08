@@ -6,8 +6,8 @@ Accord is a production-grade agentic LLM system on self-hosted open weights
 (Qwen2.5-7B on SGLang), deployed serverless and scale-to-zero on Modal. But the
 part worth your attention is *how it's engineered*: **every component is wrapped
 in a reproducible evaluation and safety harness** that measures non-deterministic
-agent behavior, red-teams it adversarially, and gates capabilities on evidence
-rather than shipping them on faith.
+agent behavior, tests it adversarially, and reports unmeasured capabilities as
+gaps rather than shipping them on faith.
 
 ### ▶ Try it live — [sameerrajendra126--accord-ui.modal.run](https://sameerrajendra126--accord-ui.modal.run)
 
@@ -47,8 +47,10 @@ converges on a recommendation:
 
 An **optional** retrieval layer (a Postgres vector store plus a knowledge graph)
 can ground recommendations in your own institutional documents — and, true to
-the theme below, it is treated as a *measured* capability: enabled on evidence
-from the evaluation harness rather than assumed to help.
+the theme below, it is treated as a *measured* capability. On the benchmark
+corpus the measurement went against it: retrieval recall is near chance and the
+no-retrieval arm won the ablation (results below). So retrieval sits behind a
+per-request `use_rag` toggle and the four analysis stages never depend on it.
 
 ## Evaluation-first: engineering non-deterministic AI you can trust
 
@@ -58,31 +60,45 @@ so **evaluation, red-teaming, and observability are first-class, not
 afterthoughts.** Accord ships the harness most projects skip:
 
 - **Adversarial / red-team safety testing.** Prompt-injection resistance
-  (payloads embedded in the negotiation text that try to hijack the agent),
+  (six payloads embedded in the negotiation text that try to hijack the agent),
   multi-tenant isolation checks, and PII-surface scanning — the OWASP-LLM-style
-  attack surface a document-ingesting agent inherits.
+  attack surface a document-ingesting agent inherits. *Status: isolation and
+  PII have been run; the injection suite is implemented but not yet run.*
 - **Reference-free quality metrics.** RAGAS-style faithfulness, answer-relevance,
   and context-precision — computed *without* gold labels, so they work on
-  unlabeled production data, not just a benchmark.
+  unlabeled production data, not just a benchmark. *Status: implemented in
+  `evals/rag_triad_eval.py`, not yet run, so no number is quoted.*
 - **Deterministic, judge-free grounding.** A citation-grounding check that
   doesn't depend on any LLM judge — the most trustworthy metric in the suite
   because it can't be gamed by the model grading itself.
-- **LLM-as-judge, done honestly.** Pairwise evaluation with position-bias
-  controls and reported judge-reliability — never quoted without its caveats.
+- **LLM-as-judge, done honestly.** Blind pairwise evaluation with position
+  randomization, a Wilson interval, and a binomial test against a coin flip —
+  never quoted without its caveats. The judge is currently the same 7B model
+  under test, and every result that depends on it says so.
 - **A unified scorecard** that reports *measured*, *not-measurable-by-design*,
   and *not-yet-run* states **distinctly**, so gaps are visible instead of
   papered over.
 - **Root-cause failure analysis + capability gating.** When a component
   underperforms, it's diagnosed to root cause and *gated* — the difference
   between an engineer who ships features and one who ships *measured* features.
+  The worked example is retrieval: near-chance recall was traced to a register
+  mismatch (queries are raw dialogue; the indexed case documents are templated
+  summaries), and a control that queries with the document's own text scores
+  1.0, which rules out the index and the embedder.
 
-Verified results (committed to `results/`, re-runnable in one command):
+Measured results — committed to `results/`, summarized in
+[`results/SCORECARD.md`](results/SCORECARD.md) (12 of 15 metrics measured, 3 not
+yet run), and reproducible with the commands in [`RUN_EVALS.md`](RUN_EVALS.md):
 
-| Evaluation | Result |
-|---|---|
-| Citation grounding (deterministic) | **1.8%** fabrication rate |
-| Multi-tenant isolation (adversarial probes) | **0** cross-namespace leaks |
-| PII surface scan | **0** high-severity leaks |
+| Evaluation | Result | How to read it |
+|---|---|---|
+| Citation grounding (deterministic) | **1 of 56** citations flagged (1.8%) | A lexical floor. The same-model LLM judge flagged 10 of 41 (24%) |
+| RAG vs no-RAG ablation (blind pairwise judge) | RAG preferred in **4 of 15** decisive comparisons (27%, 95% CI 11–52%) | Not significant (p = 0.12); the judge is the model under test |
+| Retrieval recall@5, dialogue queries | **1.0%** pgvector · 0.0% graph · 1.0% hybrid | Random baseline is 0.5%; the summary-query control scores 1.0 |
+| Multi-tenant isolation | **0** violations | One planted-canary probe across namespaces and the benchmark corpus |
+| PII surface scan | **0** high-severity hits | Scans corpus text; generated outputs are not yet scanned |
+| Outcome model | 98.0% accuracy vs 96.1% base rate | Near-degenerate target; reported, not claimed |
+| Prompt injection · RAG triad · sentiment reliability | not yet run | Harness implemented; shown as gaps in the scorecard |
 
 ## Architecture
 
@@ -134,12 +150,12 @@ Measured on a single NVIDIA **H100**, committed to `results/`:
 
 | Metric | Result |
 |---|---|
-| Peak generation throughput | **4,699 output tokens/sec** (30× scaling via continuous batching) |
+| Peak generation throughput | **4,699 output tokens/sec** at concurrency 64 (30× over concurrency 1 via continuous batching) |
 | Cost at saturation | **$0.27 per 1M output tokens** |
-| Time to first token (p50) | **25 ms** |
+| Time to first token (p50) | **25 ms** at concurrency 1 (225 ms at concurrency 64) |
 | Cold start (scale-to-zero wake) | **98 s**, then sub-second warm responses |
 | Idle cost | **~$0** (serverless) |
-| Test suite | **230+ automated tests** |
+| Test suite | **230 automated tests** |
 
 ## Tech stack
 
@@ -150,7 +166,7 @@ Measured on a single NVIDIA **H100**, committed to `results/`:
 | **LLM serving (self-hosted)** | SGLang · Qwen2.5-7B-Instruct · continuous batching · structured-output grammars |
 | **Retrieval** | Neon Postgres · pgvector (HNSW) · knowledge graph (recursive-CTE traversal) · provenance |
 | **Serving & deploy** | Modal (serverless GPU, scale-to-zero) · FastAPI · Streamlit · Docker |
-| **Data / ML** | Pydantic v2 · sentence-transformers · XGBoost · LoRA-ready fine-tuning path |
+| **Data / ML** | Pydantic v2 · sentence-transformers · XGBoost |
 | **Language** | Python 3.9+ |
 
 ## Skills this project demonstrates

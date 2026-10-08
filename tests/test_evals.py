@@ -36,7 +36,16 @@ from evals.agent_eval import (
     resolve_citation,
 )
 from evals.report import NOT_MEASURED, UNDEFINED, build_report, format_value
-from evals.retrieval_eval import Query, Ranking, build_queries, random_baseline, score_rankings
+from evals.retrieval_eval import (
+    Query,
+    Ranking,
+    build_queries,
+    random_baseline,
+    score_rankings,
+    structural_match,
+    structure_index,
+    transcript_structure,
+)
 from evals.sentiment_eval import strategy_group
 
 # --------------------------------------------------------------------------
@@ -302,6 +311,87 @@ def test_strategy_mode_uses_only_single_label_utterances():
     queries, _ = build_queries("strategy", [transcript], corpus, max_queries=0)
     assert len(queries) == 1  # the multi-label turn is excluded
     assert queries[0].gold_case_id == "strategy-uv-part"
+
+
+# --------------------------------------------------------------------------
+# Structural diagnostic — how the graph arms get read fairly
+# --------------------------------------------------------------------------
+#
+# Single-gold recall counts a structurally-identical precedent as a miss, which
+# is most of what graph retrieval returns. These tests pin the second reading
+# that keeps a low graph recall from being reported as a quality verdict.
+
+
+def _ranked_transcript(dialogue_id: str, priorities_a: dict, priorities_b: dict) -> Transcript:
+    return Transcript(
+        dialogue_id=dialogue_id,
+        source="casino",
+        domain="campsite_resources",
+        parties=[
+            Party(party_id="agent_1", priorities=priorities_a),
+            Party(party_id="agent_2", priorities=priorities_b),
+        ],
+        turns=[Turn(index=0, speaker="agent_1", text="hello")],
+        outcome=Outcome(agreement_reached=False),
+    )
+
+
+_CLASH_A = {"Firewood": "High", "Food": "Medium", "Water": "Low"}
+_CLASH_B = {"Firewood": "High", "Water": "Medium", "Food": "Low"}
+
+
+def test_partial_priority_rankings_have_no_derivable_structure():
+    """Not every dialogue can be judged — say so instead of guessing a class."""
+    assert transcript_structure(_transcript("d1")) is None
+
+
+def test_structure_index_keys_match_the_corpus_case_ids():
+    """Including the doubled `casino-casino-N` form the corpus actually uses."""
+    index = structure_index([_ranked_transcript("casino-7", _CLASH_A, _CLASH_B)])
+    assert index == {"casino-casino-7": "high_clash"}
+
+
+def test_structural_match_scores_the_share_that_shares_the_structure():
+    query = Query(query_id="q", text="t", gold_case_id="gold", structure="high_clash")
+    ranking = Ranking(
+        query=query,
+        case_ids=["casino-casino-1", "casino-casino-2", "casino-casino-3"],
+        scores=[0.9, 0.8, 0.7],
+    )
+    structures = {
+        "casino-casino-1": "high_clash",
+        "casino-casino-2": "high_clash",
+        "casino-casino-3": "complementary",
+    }
+
+    result = structural_match([ranking], structures, k=3)
+    assert result["match"] == pytest.approx(2 / 3)
+    # Two of three corpus cases are high_clash, so chance is 2/3 too — the whole
+    # point of reporting the baseline: this result is worth nothing on its own.
+    assert result["baseline"] == pytest.approx(2 / 3)
+    assert result["n_scored"] == 1
+
+
+def test_playbook_hits_are_excluded_from_the_denominator_not_counted_as_misses():
+    """A strategy document is not a wrong precedent; it is an unjudgeable one."""
+    query = Query(query_id="q", text="t", gold_case_id="gold", structure="high_clash")
+    ranking = Ranking(
+        query=query,
+        case_ids=["strategy-uv-part", "casino-casino-1"],
+        scores=[0.9, 0.8],
+    )
+    result = structural_match([ranking], {"casino-casino-1": "high_clash"}, k=2)
+    assert result["match"] == pytest.approx(1.0)
+
+
+def test_queries_with_no_derivable_structure_are_excluded_visibly():
+    """An empty denominator must show up as n_scored=0, not as a 0% match."""
+    query = Query(query_id="q", text="t", gold_case_id="gold", structure=None)
+    ranking = Ranking(query=query, case_ids=["casino-casino-1"], scores=[0.9])
+
+    result = structural_match([ranking], {"casino-casino-1": "high_clash"}, k=1)
+    assert result["match"] is None
+    assert result["n_scored"] == 0
 
 
 # --------------------------------------------------------------------------

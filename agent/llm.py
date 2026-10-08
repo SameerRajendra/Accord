@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-
 DEFAULT_BASE_URL = "http://127.0.0.1:30000/v1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 

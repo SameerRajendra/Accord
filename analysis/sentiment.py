@@ -45,10 +45,17 @@ class PerTurnSentiment(BaseModel):
     turn_index: int = Field(..., ge=0, description="0-based index into `Transcript.turns`.")
     emotion: Emotion = Field(..., description="Dominant emotion label from the 6-class taxonomy.")
     escalation: float = Field(
-        ..., ge=0.0, le=1.0,
-        description="How much this turn escalates tension vs. the running conversation (0=de-escalating, 1=maximally escalating).",
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "How much this turn escalates tension vs. the running conversation "
+            "(0=de-escalating, 1=maximally escalating)."
+        ),
     )
-    rationale: str = Field(..., description="One short phrase explaining the labels — trace-friendly.")
+    rationale: str = Field(
+        ..., description="One short phrase explaining the labels — trace-friendly."
+    )
 
 
 class SentimentBatch(BaseModel):
